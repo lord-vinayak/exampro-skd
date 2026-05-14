@@ -132,6 +132,28 @@ head_include %}
           {% endif %}
         </div>
       </div>
+
+      <!-- Mobile Camera Section -->
+      <div id="mobile-camera-section" style="display:none; margin-top:1.5rem;">
+        <h5>📱 Connect Mobile Camera</h5>
+        <p class="text-muted">Scan this QR code with your phone to set up the auxiliary camera.</p>
+        <div style="display:flex; gap:1.5rem; align-items:flex-start; flex-wrap:wrap;">
+          <div>
+            <canvas id="mobile-qr-canvas"></canvas>
+            <div style="margin-top:0.5rem; font-size:0.8rem; color:#666;">
+              Or open: <a id="mobile-qr-link" href="#" target="_blank"></a>
+            </div>
+          </div>
+          <div style="flex:1; min-width:200px;">
+            <div id="mobile-status-pending" class="alert alert-warning">
+              🔴 Waiting for mobile connection...
+            </div>
+            <div id="mobile-status-connected" class="alert alert-success" style="display:none;">
+              🟢 Mobile camera connected! You may start the exam.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="col-md-9">
       <!-- Main content -->
@@ -303,6 +325,7 @@ head_include %}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="/assets/exampro/js/violationSnapshots.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 
 {% if exam.enable_video_proctoring %}
 <!-- MediaPipe dependencies -->

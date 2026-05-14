@@ -463,6 +463,7 @@ frappe.ready(() => {
     }
 
     if (exam.submission_status === "Started") {
+        window.examStarted = true;
         window.addEventListener('beforeunload', function (e) {
             // Log it if needed, but snapshots aren't possible here.
             // sendMessage("Window closed", "Warning", "tabchange");
@@ -470,12 +471,17 @@ frappe.ready(() => {
         var $navbar = $('.navbar');
         if (!$navbar.hasClass('hidden')) $navbar.addClass('hidden');
         updateTimer();
-        
+
         // Only activate detector immediately if video proctoring is OFF.
         // If ON, it will be activated after screen share is granted in showScreenShareOverlay.
         if (!exam.enable_video_proctoring) {
             activateDetector();
         }
+    }
+
+    // Initialise mobile camera proctoring (no-op if not enabled on the exam doc)
+    if (exam["exam_submission"]) {
+        initMobileCameraSection(exam["exam_submission"]);
     }
 
     $("#nextQs").click((e) => { e.preventDefault(); submitAnswer(true); });
@@ -983,4 +989,118 @@ function submitAnswer(loadNext) {
             }
         }
     });
+}
+
+// ─── Mobile Camera Proctoring ──────────────────────────────────────────────
+
+var mobileProctoringEnabled = false;
+var mobileCameraConnected = false;
+var mobileStatusInterval = null;
+var mobileGracePeriodTimer = null;
+var mobileGracePeriodSeconds = 60;
+
+async function initMobileCameraSection(examSubmission) {
+  // Fetch exam doc to check if mobile proctoring is enabled
+  try {
+    var examName = document.querySelector('[data-exam]') ?
+      document.querySelector('[data-exam]').dataset.exam : null;
+    if (!examName) return;
+
+    var examDoc = await frappe.db.get_value('Exam', examName, ['enable_mobile_proctoring', 'mobile_grace_period']);
+    if (!examDoc || !examDoc.enable_mobile_proctoring) return;
+
+    mobileProctoringEnabled = true;
+    mobileGracePeriodSeconds = examDoc.mobile_grace_period || 60;
+  } catch (e) {
+    return;
+  }
+
+  var section = document.getElementById('mobile-camera-section');
+  if (section) section.style.display = '';
+
+  // Generate QR token
+  var result = await frappe.call({
+    method: 'exampro.exam_pro.api.mobile_proctor.generate_mobile_token',
+    args: { exam_submission: examSubmission },
+  });
+
+  var qrUrl = result.message.qr_url;
+
+  // Render QR code
+  var canvas = document.getElementById('mobile-qr-canvas');
+  if (canvas && typeof QRCode !== 'undefined') {
+    QRCode.toCanvas(canvas, qrUrl, { width: 180, errorCorrectionLevel: 'M' });
+  }
+
+  // Set link
+  var link = document.getElementById('mobile-qr-link');
+  if (link) { link.href = qrUrl; link.textContent = qrUrl; }
+
+  // Start polling
+  window.currentExamSubmission = examSubmission;
+  mobileStatusInterval = setInterval(checkMobileStatus, 3000);
+  checkMobileStatus();
+}
+
+async function checkMobileStatus() {
+  var examSubmission = window.currentExamSubmission;
+  if (!examSubmission) return;
+
+  try {
+    var result = await frappe.call({
+      method: 'exampro.exam_pro.api.mobile_proctor.get_mobile_status',
+      args: { exam_submission: examSubmission },
+    });
+
+    var status = result.message.status;
+    var grace_period = result.message.grace_period;
+    mobileGracePeriodSeconds = grace_period;
+
+    if (status === 'Connected') {
+      mobileCameraConnected = true;
+      var pending = document.getElementById('mobile-status-pending');
+      var connected = document.getElementById('mobile-status-connected');
+      if (pending) pending.style.display = 'none';
+      if (connected) connected.style.display = '';
+      hideMobileDisconnectOverlay();
+    } else if (status === 'Disconnected' && window.examStarted) {
+      showMobileDisconnectOverlay();
+    }
+  } catch (e) {
+    console.warn('[Mobile] Status check failed:', e);
+  }
+}
+
+function showMobileDisconnectOverlay() {
+  if (document.getElementById('mobile-disconnect-overlay')) return;
+
+  var overlay = document.createElement('div');
+  overlay.id = 'mobile-disconnect-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;flex-direction:column;color:#fff;text-align:center;padding:2rem;';
+
+  overlay.innerHTML = '<h3>⚠️ Mobile Camera Disconnected</h3>' +
+    '<p>Please reconnect your phone camera.<br>The exam will resume automatically.</p>' +
+    '<div style="font-size:3rem;font-weight:bold;" id="grace-countdown">' + mobileGracePeriodSeconds + '</div>' +
+    '<p style="color:#aaa;">seconds remaining</p>';
+  document.body.appendChild(overlay);
+
+  var remaining = mobileGracePeriodSeconds;
+  mobileGracePeriodTimer = setInterval(function() {
+    remaining--;
+    var el = document.getElementById('grace-countdown');
+    if (el) el.textContent = remaining;
+    if (remaining <= 0) {
+      clearInterval(mobileGracePeriodTimer);
+      if (typeof submitExam === 'function') submitExam('Terminated');
+    }
+  }, 1000);
+}
+
+function hideMobileDisconnectOverlay() {
+  var overlay = document.getElementById('mobile-disconnect-overlay');
+  if (overlay) overlay.remove();
+  if (mobileGracePeriodTimer) {
+    clearInterval(mobileGracePeriodTimer);
+    mobileGracePeriodTimer = null;
+  }
 }

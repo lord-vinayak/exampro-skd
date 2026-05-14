@@ -1,0 +1,48 @@
+{% extends "exampro/templates/exam_base.html" %}
+
+{% block content %}
+<div class="container" style="max-width:480px; margin:0 auto; padding:2rem 1rem;">
+  <div style="text-align:center; margin-bottom:1.5rem;">
+    <h4>📷 Auxiliary Camera</h4>
+    <p class="text-muted" id="exam-title">Connecting...</p>
+  </div>
+
+  <!-- Camera preview -->
+  <div style="position:relative; border-radius:12px; overflow:hidden; background:#000; margin-bottom:1rem;">
+    <video id="mobile-video"
+           autoplay
+           playsinline
+           muted
+           style="width:100%; display:block; transform:scaleX(-1);">
+    </video>
+    <canvas id="mobile-canvas" style="display:none;"></canvas>
+  </div>
+
+  <!-- Status badge -->
+  <div id="status-badge" style="text-align:center; margin-bottom:1rem;">
+    <span class="badge bg-secondary" style="font-size:1rem; padding:0.5rem 1rem;">
+      ⏳ Initialising...
+    </span>
+  </div>
+
+  <!-- Instructions -->
+  <div class="alert alert-warning" style="font-size:0.85rem;">
+    ⚠️ <strong>Keep this page open</strong> for the entire exam.<br>
+    Do not lock your screen or switch apps.
+  </div>
+
+  <!-- Wake lock warning (shown if unsupported) -->
+  <div id="wakelock-warning" class="alert alert-info" style="display:none; font-size:0.85rem;">
+    💡 Your browser doesn't support automatic screen lock prevention.<br>
+    Please set your screen timeout to <strong>Never</strong> in phone settings.
+  </div>
+
+  <!-- Error state -->
+  <div id="error-box" class="alert alert-danger" style="display:none;"></div>
+</div>
+
+<script>
+  window.MOBILE_TOKEN = {{ frappe.as_json(token) }};
+</script>
+<script src="/assets/exampro/js/mobile-proctor.js"></script>
+{% endblock %}

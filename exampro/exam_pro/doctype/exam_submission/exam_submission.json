@@ -39,7 +39,10 @@
   "face_count_changes",
   "total_away_time",
   "total_distracted_time",
-  "retina_location_log"
+  "retina_location_log",
+  "mobile_camera_status",
+  "mobile_session_token",
+  "mobile_last_seen"
  ],
  "fields": [
   {
@@ -268,6 +271,26 @@
    "fieldname": "retina_location_log",
    "fieldtype": "JSON",
    "label": "Retina Location Log"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "mobile_camera_status",
+   "fieldtype": "Select",
+   "label": "Mobile Camera Status",
+   "options": "Pending\nConnected\nDisconnected",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mobile_session_token",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Mobile Session Token"
+  },
+  {
+   "fieldname": "mobile_last_seen",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Mobile Camera Last Seen"
   }
  ],
  "index_web_pages_for_search": 1,

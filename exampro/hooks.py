@@ -144,23 +144,11 @@ doc_events = {
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-#	"all": [
-#		"exampro.tasks.all"
-#	],
-#	"daily": [
-#		"exampro.tasks.daily"
-#	],
-#	"hourly": [
-#		"exampro.tasks.hourly"
-#	],
-#	"weekly": [
-#		"exampro.tasks.weekly"
-#	],
-#	"monthly": [
-#		"exampro.tasks.monthly"
-#	],
-# }
+scheduler_events = {
+    "all": [
+        "exampro.exam_pro.api.mobile_proctor.check_mobile_heartbeats",
+    ],
+}
 
 # Testing
 # -------
@@ -235,7 +223,8 @@ website_route_rules = [
     {"from_route": "/exam/<exam_submission>", "to_route": "exam/result"},
     {"from_route": "/manage", "to_route": "manage/users"},
     {"from_route": "/exam/invite/<invite_code>", "to_route": "exam/invite"},
-    {"from_route": "/leaderboard/<submission>", "to_route": "leaderboard"}
+    {"from_route": "/leaderboard/<submission>", "to_route": "leaderboard"},
+    {"from_route": "/mobile-proctor", "to_route": "mobile-proctor"},
 ]
 
 fixtures = [

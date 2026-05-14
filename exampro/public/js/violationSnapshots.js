@@ -37,7 +37,7 @@ class ViolationSnapshotManager {
 
     this.options = {
       webcamElementId:      'webcam-stream',
-      cooldownMs:           5000,
+      cooldownMs:           3000,
       onScreenShareGranted: null,
       onScreenShareDenied:  null,
       onSnapshotCaptured:   null,

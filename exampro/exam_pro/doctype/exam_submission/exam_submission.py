@@ -23,57 +23,49 @@ from botocore.client import Config
 
 def get_s3_client():
     """
-    Get or create an S3 client from the connection pool.
-    Stores the client in frappe.local for reuse within the same request.
-    
-    Returns:
-        boto3.client: S3 client with appropriate configuration
-        
-    Raises:
-        Exception: If S3 configuration is invalid or connection fails
+    Get or create a provider-aware S3 client, cached per Frappe request.
+
+    AWS S3  — no custom endpoint_url; boto3 auto-routes by bucket region.
+    R2      — needs the account endpoint URL and region_name='auto'.
     """
-    # Check if we already have a client in the current request
     if hasattr(frappe.local, "s3_client"):
         return frappe.local.s3_client
-        
+
     try:
-        # Get settings
         settings = frappe.get_single("Exam Settings")
-        cfdomain = settings.get_storage_endpoint()
-        if not cfdomain:
-            frappe.throw(_("Storage endpoint is not configured. Please check Exam Settings."))
-            
-        # Validate required credentials
+
         if not settings.aws_key or not settings.get_password("aws_secret"):
             frappe.throw(_("AWS credentials are not configured. Please check Exam Settings."))
-        
-        # Create a new client with more conservative timeout settings
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=cfdomain,
+
+        base_config = Config(
+            signature_version='s3v4',
+            max_pool_connections=25,
+            connect_timeout=10,
+            read_timeout=120,
+            retries={'max_attempts': 3},
+        )
+
+        client_kwargs = dict(
             aws_access_key_id=settings.aws_key,
             aws_secret_access_key=settings.get_password("aws_secret"),
-            config=Config(
-                signature_version='s3v4',
-                # Connection settings optimized for reliability
-                max_pool_connections=25,     # Reduced from 50 for stability
-                connect_timeout=10,          # Increased from 5 seconds
-                read_timeout=120,            # Increased from 60 seconds
-                retries={'max_attempts': 3}, # Add retry logic
-                region_name='auto'           # Let boto3 determine region
-            )
+            config=base_config,
         )
-        
-        # Store in frappe.local for this request
+
+        if settings.storage_provider == "Cloudflare R2":
+            if not settings.aws_account_id:
+                frappe.throw(_("Cloudflare Account ID is not configured. Please check Exam Settings."))
+            client_kwargs["endpoint_url"] = f"https://{settings.aws_account_id}.r2.cloudflarestorage.com"
+            client_kwargs["region_name"] = "auto"
+        # AWS S3: omit endpoint_url entirely — boto3 resolves the correct
+        # regional endpoint automatically, avoiding the doubled-bucket-name
+        # path that causes NoSuchKey on ListObjectsV2.
+
+        s3_client = boto3.client("s3", **client_kwargs)
         frappe.local.s3_client = s3_client
-        
         return s3_client
-        
+
     except Exception as e:
-        error_msg = f"Failed to create S3 client: {str(e)}"
-        frappe.log_error(error_msg, "S3 Client Creation Error")
-        
-        # Re-raise with more context
+        frappe.log_error(f"Failed to create S3 client: {str(e)}", "S3 Client Creation Error")
         frappe.throw(_("Unable to connect to video storage. Please check your storage configuration or contact administrator."))
 
 def convert_image_to_base64(image_path):
@@ -558,7 +550,7 @@ def get_question(exam_submission=None, qsno=1):
 
 
 @frappe.whitelist()
-def submit_question_response(exam_submission=None, qs_name=None, answer="", markdflater=0):
+def submit_question_response(exam_submission=None, qs_name=None, answer="", markdflater=0, qs_no=None):
 	"""
 	Submit response and add marks if applicable
 	"""
@@ -572,7 +564,12 @@ def submit_question_response(exam_submission=None, qs_name=None, answer="", mark
 	can_process_question(submission)
 	save_tracking_info(exam_submission)
 
-	answer_docname = frappe.db.get_value("Exam Answer", {"parent": exam_submission, "exam_question": qs_name}, "name")
+	# A question can be added to an exam at multiple positions, so the same
+	# exam_question may map to multiple Exam Answer rows. Disambiguate by seq_no.
+	answer_filters = {"parent": exam_submission, "exam_question": qs_name}
+	if qs_no:
+		answer_filters["seq_no"] = int(qs_no)
+	answer_docname = frappe.db.get_value("Exam Answer", answer_filters, "name")
 	if not answer_docname:
 		frappe.throw("Invalid question requested.")
 
@@ -602,7 +599,7 @@ def post_exam_message(exam_submission=None, message=None, type_of_message="Gener
 	type_of_user = "System"
 	if frappe.session.user == doc.assigned_proctor:
 		type_of_user = "Proctor"
-	elif frappe.session.user == doc.candidate:
+	elif frappe.session.user == doc.candidate and type_of_message == "General":
 		type_of_user = "Candidate"
 
 	tnow = frappe.utils.now()
@@ -667,6 +664,26 @@ def post_exam_message(exam_submission=None, message=None, type_of_message="Gener
 		})
 		terminate_msg.insert(ignore_permissions=True)
 
+	# Terminate when no face has been visible for the full grace period (camera covered/shutter closed)
+	elif warning_type == "nofacetimeout":
+		doc.reload()
+		if doc.status not in ("Terminated", "Submitted"):
+			doc.status = "Terminated"
+			doc.save(ignore_permissions=True)
+			frappe.db.commit()
+
+			terminate_msg = frappe.get_doc({
+				"doctype": "Exam Messages",
+				"exam_submission": exam_submission,
+				"timestamp": frappe.utils.now(),
+				"from": "System",
+				"from_user": "Administrator",
+				"message": "Exam terminated because no face was visible to the camera for 60 seconds.",
+				"type_of_message": "Critical",
+				"warning_type": "nofacetimeout"
+			})
+			terminate_msg.insert(ignore_permissions=True)
+
 	return {"status": 1}
 
 @frappe.whitelist()
@@ -724,6 +741,14 @@ def exam_overview(exam_submission=None):
 	return list of questions and its status
 	"""
 	assert exam_submission
+
+	# Restrict to the candidate (or assigned proctor for live monitoring)
+	candidate, assigned_proctor = frappe.db.get_value(
+		"Exam Submission", exam_submission, ["candidate", "assigned_proctor"]
+	) or (None, None)
+	if frappe.session.user not in [candidate, assigned_proctor]:
+		raise PermissionError("You don't have access to view this exam overview.")
+
 	all_submitted = get_submitted_questions(
 		exam_submission, fields=["marked_for_later", "exam_question", "answer", "seq_no"]
 	)
@@ -1024,11 +1049,14 @@ def post_tracking_info(info=None):
 	assert info, "Tracking info is required"
 
 	info = frappe.parse_json(info)
-	print("*"*100)
-	print("Tracking Info:", info)
 	exam_submission = info.get("exam_submission")
 	if not exam_submission:
 		return
+
+	# Only the candidate may post tracking data for their own submission
+	candidate = frappe.db.get_value("Exam Submission", exam_submission, "candidate")
+	if not candidate or frappe.session.user != candidate:
+		raise PermissionError("You don't have access to post tracking data for this exam.")
 
 	# Extract only the required tracking values
 	face_count_changes = info.get("faceCountChanges", 0)
@@ -1109,3 +1137,135 @@ def save_tracking_info(exam_submission):
 	calculate_attention_score(exam_submission)
 
 	return True
+
+
+def _upload_base64_snapshot(s3_client, bucket_name, exam_submission, base64_data, object_suffix):
+	import io
+
+	if not base64_data:
+		return None
+
+	try:
+		if "," in base64_data:
+			base64_data = base64_data.split(",", 1)[1]
+
+		image_bytes = base64.b64decode(base64_data)
+		file_obj = io.BytesIO(image_bytes)
+		object_key = f"{exam_submission}/{object_suffix}"
+
+		s3_client.upload_fileobj(
+			file_obj,
+			bucket_name,
+			object_key,
+			ExtraArgs={"ContentType": "image/jpeg"},
+		)
+
+		return s3_client.generate_presigned_url(
+			"get_object",
+			Params={"Bucket": bucket_name, "Key": object_key},
+			ExpiresIn=604800,
+		)
+	except Exception as e:
+		frappe.log_error(
+			f"Snapshot upload failed - submission: {exam_submission}, object: {object_suffix}, error: {str(e)}",
+			"Violation Snapshot Upload Error",
+		)
+		return None
+
+
+def _get_exam_message_warning_types():
+	meta = frappe.get_meta("Exam Messages")
+	field = meta.get_field("warning_type")
+	options = (field.options or "").splitlines() if field else []
+	return {option.strip().lower() for option in options if option.strip()}
+
+
+@frappe.whitelist()
+def save_violation_snapshot(
+	exam_submission,
+	violation_type,
+	description="",
+	webcam_snapshot="",
+	screen_snapshot="",
+):
+	candidate = frappe.db.get_value("Exam Submission", exam_submission, "candidate")
+	if not candidate:
+		frappe.throw(_("Exam submission not found."))
+
+	if frappe.session.user != candidate:
+		raise PermissionError("You do not have permission to submit snapshots for this exam.")
+
+	status = frappe.db.get_value("Exam Submission", exam_submission, "status")
+	if status != "Started":
+		return {"status": "skipped", "reason": f"Exam status is '{status}', not 'Started'."}
+
+	violation_type = (violation_type or "other").strip().lower()
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+	ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+	snapshot_urls = {}
+
+	webcam_key = f"{exam_submission}/violations/{violation_type}_{ts}_webcam.jpg"
+	screen_key = f"{exam_submission}/violations/{violation_type}_{ts}_screen.jpg"
+	uploaded_webcam_key = None
+	uploaded_screen_key = None
+
+	if webcam_snapshot:
+		url = _upload_base64_snapshot(
+			s3_client,
+			settings.s3_bucket,
+			exam_submission,
+			webcam_snapshot,
+			f"violations/{violation_type}_{ts}_webcam.jpg",
+		)
+		if url:
+			snapshot_urls["webcam"] = url
+			uploaded_webcam_key = webcam_key
+
+	if screen_snapshot:
+		url = _upload_base64_snapshot(
+			s3_client,
+			settings.s3_bucket,
+			exam_submission,
+			screen_snapshot,
+			f"violations/{violation_type}_{ts}_screen.jpg",
+		)
+		if url:
+			snapshot_urls["screen"] = url
+			uploaded_screen_key = screen_key
+
+	readable_label = {
+		"tabchange": "Tab / window switched",
+		"appswitch": "Another application opened",
+		"multiplefaces": "Multiple faces detected",
+		"noface": "No face detected",
+		"gazeaway": "Candidate looking away",
+		"monitorchange": "Monitor configuration changed",
+		"nowebcam": "Webcam unavailable",
+		"nofacetimeout": "No face timeout",
+	}.get(violation_type, violation_type)
+
+	valid_warning_types = _get_exam_message_warning_types()
+	warning_type = violation_type if violation_type in valid_warning_types else "other"
+
+	# Build a short, human-readable message for the chat/log — NO URLs.
+	msg_parts = [f"{readable_label}: {description}" if description else readable_label]
+	if warning_type != violation_type:
+		msg_parts.append(f"(violation: {violation_type})")
+
+	frappe.get_doc({
+		"doctype": "Exam Messages",
+		"exam_submission": exam_submission,
+		"timestamp": frappe.utils.now(),
+		"from": "System",
+		"from_user": candidate,
+		"message": " | ".join(msg_parts),
+		"type_of_message": "Warning",
+		"warning_type": warning_type,
+		"webcam_snapshot_key": uploaded_webcam_key,
+		"screen_snapshot_key": uploaded_screen_key,
+	}).insert(ignore_permissions=True)
+
+	frappe.db.commit()
+
+	return {"status": "success", "snapshot_urls": snapshot_urls}

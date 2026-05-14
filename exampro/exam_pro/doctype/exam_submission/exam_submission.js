@@ -101,6 +101,11 @@ frappe.ui.form.on("Exam Submission", {
             }, 100);
         }
 
+        // Mobile snapshots viewer
+        if (frm.doc.mobile_camera_status && frm.doc.mobile_camera_status !== 'Pending') {
+            renderMobileSnapshots(frm);
+        }
+
         // Proctoring Report Download Button
         if (["Submitted", "Terminated"].includes(frm.doc.status)) {
             frm.add_custom_button(__('Download Proctoring Report'), function() {
@@ -126,6 +131,45 @@ frappe.ui.form.on("Exam Submission", {
         }
     },
 });
+
+async function renderMobileSnapshots(frm) {
+    const result = await frappe.call({
+        method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.get_mobile_violation_snapshots',
+        args: { exam_submission: frm.doc.name },
+    });
+
+    const snapshots = result.message || [];
+    if (!snapshots.length) return;
+
+    const html = `
+        <div style="margin-top:1rem; padding:1rem; border-top:1px solid #eee;">
+            <h6>📱 Mobile Camera Violations (${snapshots.length})</h6>
+            <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:0.5rem;">
+                ${snapshots.map(s => `
+                    <div style="text-align:center;cursor:pointer;" onclick="window.open('${s.snapshot_url || '#'}','_blank')">
+                        ${s.snapshot_url ? `<img src="${s.snapshot_url}" style="width:120px;height:90px;object-fit:cover;border-radius:6px;border:1px solid #ddd;" onerror="this.style.display='none'">` : '<div style="width:120px;height:90px;background:#eee;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#999;">No image</div>'}
+                        <div style="font-size:0.7rem;color:#666;margin-top:2px;">
+                            ${frappe.datetime.str_to_user(s.timestamp)}<br>
+                            <span class="badge bg-warning text-dark" style="font-size:0.65rem;">${s.warning_type}</span>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+
+    // Try to append to the form wrapper (below the form fields)
+    frm.fields_dict['mobile_camera_status']?.$wrapper
+        ?.closest('.frappe-card')
+        ?.append(`<div id="mobile-snapshots-section">${html}</div>`);
+
+    // Fallback: append to page main section
+    if (!frm.page.main.find('#mobile-snapshots-section').length) {
+        // remove old instance if present
+        frm.page.main.find('#mobile-snapshots-section').remove();
+        frm.page.main.append(`<div id="mobile-snapshots-section">${html}</div>`);
+    }
+}
 
 function drawRetinaPlot(retinaData) {
     const canvas = document.getElementById('plotCanvas');

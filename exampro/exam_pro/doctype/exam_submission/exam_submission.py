@@ -1269,3 +1269,33 @@ def save_violation_snapshot(
 	frappe.db.commit()
 
 	return {"status": "success", "snapshot_urls": snapshot_urls}
+
+
+@frappe.whitelist()
+def get_mobile_violation_snapshots(exam_submission):
+	"""Return mobile violation snapshots with presigned S3 URLs for display."""
+	messages = frappe.get_all(
+		"Exam Messages",
+		filters={
+			"exam_submission": exam_submission,
+			"mobile_snapshot_key": ["is", "set"],
+		},
+		fields=["name", "warning_type", "timestamp", "mobile_snapshot_key", "message"],
+		order_by="timestamp asc",
+	)
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	for msg in messages:
+		if msg.mobile_snapshot_key:
+			try:
+				msg["snapshot_url"] = s3_client.generate_presigned_url(
+					"get_object",
+					Params={"Bucket": settings.s3_bucket, "Key": msg.mobile_snapshot_key},
+					ExpiresIn=3600,
+				)
+			except Exception:
+				msg["snapshot_url"] = None
+
+	return messages

@@ -999,48 +999,152 @@ var mobileStatusInterval = null;
 var mobileGracePeriodTimer = null;
 var mobileGracePeriodSeconds = 60;
 
+// Block the Start Exam button until mobile camera is connected
+function blockStartExamButton() {
+  var btn = document.getElementById('quiz-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.title = 'Connect your mobile camera first';
+  btn.style.opacity = '0.5';
+  btn.style.cursor = 'not-allowed';
+}
+
+function unblockStartExamButton() {
+  var btn = document.getElementById('quiz-btn');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.title = '';
+  btn.style.opacity = '';
+  btn.style.cursor = '';
+}
+
+// Show a full-screen blocking modal with the QR code
+function showMobileQRModal(qrUrl) {
+  if (document.getElementById('mobile-qr-modal')) return; // already shown
+
+  var modal = document.createElement('div');
+  modal.id = 'mobile-qr-modal';
+  modal.style.cssText = [
+    'position:fixed',
+    'inset:0',
+    'z-index:10000',
+    'background:rgba(0,0,0,0.88)',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+  ].join(';');
+
+  modal.innerHTML = [
+    '<div style="background:#fff;border-radius:12px;padding:2rem 2.5rem;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);">',
+      '<h4 style="margin-top:0;margin-bottom:0.5rem;">📱 Connect Mobile Camera</h4>',
+      '<p style="color:#555;font-size:0.9rem;margin-bottom:1rem;">',
+        'Scan this QR code with your phone to set up the auxiliary camera.<br>',
+        '<strong>The exam will unlock once your phone is connected.</strong>',
+      '</p>',
+      '<div id="mobile-qr-container" style="display:inline-block;padding:8px;border:1px solid #ddd;border-radius:8px;background:#fff;"></div>',
+      '<div style="margin-top:0.75rem;font-size:0.78rem;color:#888;">',
+        'Or open: <a id="mobile-qr-link" href="' + qrUrl + '" target="_blank" style="color:#0070f3;word-break:break-all;">' + qrUrl + '</a>',
+      '</div>',
+      '<div id="mobile-modal-status" style="margin-top:1rem;padding:0.5rem 1rem;border-radius:6px;background:#fff3cd;color:#856404;font-weight:500;">',
+        '🔴 Waiting for mobile connection…',
+      '</div>',
+    '</div>',
+  ].join('');
+
+  document.body.appendChild(modal);
+
+  // Render QR using qrcodejs (synchronous constructor)
+  var container = document.getElementById('mobile-qr-container');
+  if (container && typeof QRCode !== 'undefined') {
+    new QRCode(container, {
+      text: qrUrl,
+      width: 200,
+      height: 200,
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } else {
+    console.warn('[Mobile] QRCode library not available yet');
+    // Retry once after a short delay in case the CDN script is still loading
+    setTimeout(function() {
+      var c2 = document.getElementById('mobile-qr-container');
+      if (c2 && typeof QRCode !== 'undefined' && !c2.querySelector('canvas,img')) {
+        new QRCode(c2, { text: qrUrl, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.M });
+      }
+    }, 1500);
+  }
+}
+
+function closeMobileQRModal() {
+  var modal = document.getElementById('mobile-qr-modal');
+  if (modal) modal.remove();
+}
+
+function updateMobileModalStatus(status) {
+  var el = document.getElementById('mobile-modal-status');
+  if (!el) return;
+  if (status === 'Connected') {
+    el.style.background = '#d1e7dd';
+    el.style.color = '#0a3622';
+    el.textContent = '🟢 Mobile camera connected! Starting exam…';
+  } else if (status === 'Disconnected') {
+    el.style.background = '#f8d7da';
+    el.style.color = '#842029';
+    el.textContent = '⚠️ Connection lost. Reconnect your phone.';
+  }
+}
+
 async function initMobileCameraSection(examSubmission) {
-  // Fetch exam doc to check if mobile proctoring is enabled
-  try {
-    // Use the global `exam` object injected by the Jinja template (var exam = {{ exam | tojson }})
-    // There is no [data-exam] DOM attribute in index.html.
-    var examName = (typeof exam !== 'undefined' && exam && exam.name) ? exam.name : null;
-    if (!examName) return;
+  // exam global is injected by Jinja: var exam = {{ exam | tojson }}
+  // enable_mobile_proctoring and mobile_grace_period are included via index.py
+  if (!exam || !exam.enable_mobile_proctoring) return;
 
-    var examDoc = await frappe.db.get_value('Exam', examName, ['enable_mobile_proctoring', 'mobile_grace_period']);
-    if (!examDoc || !examDoc.enable_mobile_proctoring) return;
+  mobileProctoringEnabled = true;
+  mobileGracePeriodSeconds = exam.mobile_grace_period || 60;
+  window.currentExamSubmission = examSubmission;
 
-    mobileProctoringEnabled = true;
-    mobileGracePeriodSeconds = examDoc.mobile_grace_period || 60;
-  } catch (e) {
+  // If exam is already started (resumed session), just start polling — no QR needed
+  if (exam.submission_status === 'Started') {
+    mobileStatusInterval = setInterval(checkMobileStatus, 3000);
+    checkMobileStatus();
     return;
   }
 
-  var section = document.getElementById('mobile-camera-section');
-  if (section) section.style.display = '';
+  // Exam not started yet ("Registered"): show QR modal + block Start button
+  try {
+    var result = await frappe.call({
+      method: 'exampro.exam_pro.api.mobile_proctor.generate_mobile_token',
+      args: { exam_submission: examSubmission },
+    });
 
-  // Generate QR token
-  var result = await frappe.call({
-    method: 'exampro.exam_pro.api.mobile_proctor.generate_mobile_token',
-    args: { exam_submission: examSubmission },
-  });
+    if (!result || !result.message || !result.message.qr_url) {
+      console.warn('[Mobile] generate_mobile_token returned unexpected response', result);
+      return;
+    }
 
-  var qrUrl = result.message.qr_url;
+    var qrUrl = result.message.qr_url;
+    console.log('[MobileDebug] QR URL:', qrUrl);
 
-  // Render QR code
-  var canvas = document.getElementById('mobile-qr-canvas');
-  if (canvas && typeof QRCode !== 'undefined') {
-    QRCode.toCanvas(canvas, qrUrl, { width: 180, errorCorrectionLevel: 'M' });
+    showMobileQRModal(qrUrl);
+    blockStartExamButton();
+
+    // Start polling for connection status
+    mobileStatusInterval = setInterval(checkMobileStatus, 3000);
+    checkMobileStatus();
+
+  } catch (e) {
+    console.warn('[Mobile] Camera init failed:', e);
   }
+}
 
-  // Set link
-  var link = document.getElementById('mobile-qr-link');
-  if (link) { link.href = qrUrl; link.textContent = qrUrl; }
+function updateMobileBadge(status) {
+  var badge = document.getElementById('mobile-status-badge');
+  var dot = document.getElementById('mobile-badge-dot');
+  var text = document.getElementById('mobile-badge-text');
+  if (!badge || !dot || !text) return;
 
-  // Start polling
-  window.currentExamSubmission = examSubmission;
-  mobileStatusInterval = setInterval(checkMobileStatus, 3000);
-  checkMobileStatus();
+  var colours = { Connected: '#28a745', Disconnected: '#dc3545', Pending: '#6c757d' };
+  dot.style.background = colours[status] || colours.Pending;
+  text.textContent = '📱 ' + (status || 'Mobile');
 }
 
 async function checkMobileStatus() {
@@ -1053,19 +1157,38 @@ async function checkMobileStatus() {
       args: { exam_submission: examSubmission },
     });
 
+    if (!result || !result.message) return;
     var status = result.message.status;
     var grace_period = result.message.grace_period;
-    mobileGracePeriodSeconds = grace_period;
+    if (grace_period) mobileGracePeriodSeconds = grace_period;
+
+    updateMobileBadge(status);
 
     if (status === 'Connected') {
       mobileCameraConnected = true;
-      var pending = document.getElementById('mobile-status-pending');
-      var connected = document.getElementById('mobile-status-connected');
-      if (pending) pending.style.display = 'none';
-      if (connected) connected.style.display = '';
-      hideMobileDisconnectOverlay();
-    } else if (status === 'Disconnected' && window.examStarted) {
-      showMobileDisconnectOverlay();
+
+      if (!window.examStarted) {
+        // Pre-exam: show connected state in modal, then unlock Start button
+        updateMobileModalStatus('Connected');
+        setTimeout(function() {
+          closeMobileQRModal();
+          unblockStartExamButton();
+        }, 1200);
+        // Keep polling — page will reload when exam starts, restarting the interval
+        clearInterval(mobileStatusInterval);
+        mobileStatusInterval = null;
+      } else {
+        // During exam: hide disconnect overlay if it was showing
+        hideMobileDisconnectOverlay();
+      }
+
+    } else if (status === 'Disconnected') {
+      mobileCameraConnected = false;
+      if (window.examStarted) {
+        showMobileDisconnectOverlay();
+      } else {
+        updateMobileModalStatus('Disconnected');
+      }
     }
   } catch (e) {
     console.warn('[Mobile] Status check failed:', e);

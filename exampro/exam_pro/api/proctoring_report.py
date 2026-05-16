@@ -80,13 +80,13 @@ def get_report_context(doc):
         "Exam Messages",
         filters={"exam_submission": doc.name, "type_of_message": "Warning"},
         fields=["name", "warning_type", "message", "timestamp", "from",
-                "webcam_snapshot_key", "screen_snapshot_key"],
+                "webcam_snapshot_key", "screen_snapshot_key", "mobile_snapshot_key"],
         order_by="timestamp asc"
     )
 
     # Separate messages into those with stored S3 keys (new) and those without (old).
-    msgs_with_keys    = [m for m in messages if m.get("webcam_snapshot_key") or m.get("screen_snapshot_key")]
-    msgs_without_keys = [m for m in messages if not m.get("webcam_snapshot_key") and not m.get("screen_snapshot_key")]
+    msgs_with_keys    = [m for m in messages if m.get("webcam_snapshot_key") or m.get("screen_snapshot_key") or m.get("mobile_snapshot_key")]
+    msgs_without_keys = [m for m in messages if not m.get("webcam_snapshot_key") and not m.get("screen_snapshot_key") and not m.get("mobile_snapshot_key")]
 
     # For old messages: fall back to listing S3 and timestamp-matching.
     snapshots   = get_s3_snapshots(doc.name) if msgs_without_keys else []
@@ -98,8 +98,9 @@ def get_report_context(doc):
     key_images = {}   # msg.name → {"webcam": data_uri | None, "screen": data_uri | None}
     for m in msgs_with_keys:
         key_images[m.name] = {
-            "webcam": _download_s3_key(s3_client, settings.s3_bucket, m.webcam_snapshot_key),
-            "screen": _download_s3_key(s3_client, settings.s3_bucket, m.screen_snapshot_key),
+            "webcam":  _download_s3_key(s3_client, settings.s3_bucket, m.webcam_snapshot_key),
+            "screen":  _download_s3_key(s3_client, settings.s3_bucket, m.screen_snapshot_key),
+            "mobile":  _download_s3_key(s3_client, settings.s3_bucket, m.mobile_snapshot_key),
         }
 
     frappe.log_error(
@@ -131,6 +132,7 @@ def get_report_context(doc):
         if msg.name in key_images:
             webcam_img = key_images[msg.name]["webcam"]
             screen_img = key_images[msg.name]["screen"]
+            mobile_img = key_images[msg.name]["mobile"]
             snapshot_diff = None
         else:
             # Path 2 — old record: match against the timestamp-based evidence_log.
@@ -144,6 +146,7 @@ def get_report_context(doc):
                     matched = group
             webcam_img = matched["webcam"] if matched else None
             screen_img = matched["screen"] if matched else None
+            mobile_img = None
             snapshot_diff = round(best_diff, 1) if matched else None
 
         formatted_violations.append({
@@ -155,6 +158,7 @@ def get_report_context(doc):
             "from": msg.get("from"),
             "webcam": webcam_img,
             "screen": screen_img,
+            "mobile": mobile_img,
             "snapshot_ts_diff": snapshot_diff,
         })
 

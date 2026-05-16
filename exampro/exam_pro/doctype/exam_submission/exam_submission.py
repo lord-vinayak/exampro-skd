@@ -56,9 +56,11 @@ def get_s3_client():
                 frappe.throw(_("Cloudflare Account ID is not configured. Please check Exam Settings."))
             client_kwargs["endpoint_url"] = f"https://{settings.aws_account_id}.r2.cloudflarestorage.com"
             client_kwargs["region_name"] = "auto"
-        # AWS S3: omit endpoint_url entirely — boto3 resolves the correct
-        # regional endpoint automatically, avoiding the doubled-bucket-name
-        # path that causes NoSuchKey on ListObjectsV2.
+        else:
+            # AWS S3: set region explicitly so SigV4 signing uses the correct endpoint.
+            # Without this, buckets outside us-east-1 return AuthorizationHeaderMalformed.
+            region = getattr(settings, "aws_region", None) or "us-east-1"
+            client_kwargs["region_name"] = region
 
         s3_client = boto3.client("s3", **client_kwargs)
         frappe.local.s3_client = s3_client

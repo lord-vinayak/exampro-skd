@@ -42,7 +42,7 @@
 </div>
 
 <script>
-  window.MOBILE_TOKEN = {{ frappe.as_json(token) }};
+  window.MOBILE_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 </script>
 <script src="/assets/exampro/js/mobile-proctor.js"></script>
 {% endblock %}

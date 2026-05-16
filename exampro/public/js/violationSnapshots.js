@@ -53,9 +53,6 @@ class ViolationSnapshotManager {
 
     // Per-violation-type last capture timestamp for cooldown enforcement
     this._lastCaptureTime = {};
-
-    // Prevent overlapping async captures
-    this._capturing = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -78,7 +75,7 @@ class ViolationSnapshotManager {
           displaySurface: 'monitor',   // hints browser to show "Entire Screen" first
           width:          { ideal: 1920 },
           height:         { ideal: 1080 },
-          frameRate:      { ideal: 1 }, // 1 fps is plenty for snapshots
+          frameRate:      { ideal: 15 }, // higher fps = more timely snapshots
         },
         audio: false,
       });
@@ -133,42 +130,35 @@ class ViolationSnapshotManager {
    *                                'gazeaway'  | 'monitorchange' | 'appswitch'
    * @param {string} [description]  Human-readable detail shown to the proctor
    */
-  async capture(violationType, description = '') {
+  capture(violationType, description = '') {
     if (!this._canCapture(violationType)) {
       console.log(`[ViolationSnapshot] Cooldown active for "${violationType}", skipping.`);
       return;
     }
 
-    if (this._capturing) {
-      console.log('[ViolationSnapshot] Capture already in progress, skipping.');
+    // Grab pixels RIGHT NOW synchronously — before any await or network call.
+    // This ensures the snapshot reflects the exact moment the violation fired.
+    const webcamSnapshot = this._captureWebcamSync();
+    const screenSnapshot = this._captureScreenSync();
+
+    this._lastCaptureTime[violationType] = Date.now();
+
+    if (!webcamSnapshot && !screenSnapshot) {
+      console.warn('[ViolationSnapshot] Both snapshots null, nothing to upload.');
       return;
     }
 
-    this._capturing = true;
-    this._lastCaptureTime[violationType] = Date.now();
-
-    try {
-      const [webcamSnapshot, screenSnapshot] = await Promise.all([
-        this._captureWebcam(),
-        this._captureScreen(),
-      ]);
-
-      if (!webcamSnapshot && !screenSnapshot) {
-        console.warn('[ViolationSnapshot] Both snapshots null, nothing to upload.');
-        return;
-      }
-
-      const result = await this._upload(violationType, description, webcamSnapshot, screenSnapshot);
-
-      if (result && this.options.onSnapshotCaptured) {
-        this.options.onSnapshotCaptured(violationType, result.snapshot_urls || {});
-      }
-    } catch (err) {
-      console.error(`[ViolationSnapshot] Failed for "${violationType}":`, err);
-      if (this.options.onSnapshotError) this.options.onSnapshotError(violationType, err);
-    } finally {
-      this._capturing = false;
-    }
+    // Upload in the background — don't block the caller.
+    this._upload(violationType, description, webcamSnapshot, screenSnapshot)
+      .then((result) => {
+        if (result && this.options.onSnapshotCaptured) {
+          this.options.onSnapshotCaptured(violationType, result.snapshot_urls || {});
+        }
+      })
+      .catch((err) => {
+        console.error(`[ViolationSnapshot] Upload failed for "${violationType}":`, err);
+        if (this.options.onSnapshotError) this.options.onSnapshotError(violationType, err);
+      });
   }
 
   /**
@@ -200,19 +190,12 @@ class ViolationSnapshotManager {
   // ---------------------------------------------------------------------------
 
   /**
-   * Capture a JPEG frame from the candidate's webcam video element.
+   * Synchronously capture a JPEG frame from the webcam video element.
+   * Called at violation time so the frame is from the exact moment.
    */
-  async _captureWebcam() {
+  _captureWebcamSync() {
     const video = document.getElementById(this.options.webcamElementId);
-
-    if (!video) {
-      console.warn('[ViolationSnapshot] Webcam element not found:', this.options.webcamElementId);
-      return null;
-    }
-    if (video.readyState < 2) {
-      console.warn('[ViolationSnapshot] Webcam not ready yet.');
-      return null;
-    }
+    if (!video || video.readyState < 2) return null;
 
     try {
       const size = this._fitSize(video.videoWidth || 640, video.videoHeight || 480, 640, 480);
@@ -221,7 +204,6 @@ class ViolationSnapshotManager {
       canvas.height = size.height;
 
       const ctx = canvas.getContext('2d');
-      // Mirror to match what the candidate sees in the preview
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -234,24 +216,17 @@ class ViolationSnapshotManager {
   }
 
   /**
-   * Capture a JPEG frame of the FULL SCREEN from the getDisplayMedia stream.
-   *
-   * This captures whatever is actually on the candidate's display at this
-   * moment — other tabs, other applications, the desktop — everything.
-   *
-   * Returns null if screen share was never granted or has been stopped.
+   * Synchronously capture the current screen frame from the display media stream.
+   * Because we run at 15 fps the frame is at most ~67 ms old — effectively instant.
    */
-  async _captureScreen() {
-    if (!this.isScreenShareActive()) {
-      console.warn('[ViolationSnapshot] Screen stream not active; skipping screen capture.');
+  _captureScreenSync() {
+    if (!this.isScreenShareActive() || !this._screenVideo || this._screenVideo.readyState < 2) {
       return null;
     }
 
     try {
-      await this._waitForVideoFrame(this._screenVideo);
-
       const size = this._fitSize(
-        this._screenVideo.videoWidth || 1920,
+        this._screenVideo.videoWidth  || 1920,
         this._screenVideo.videoHeight || 1080,
         1280,
         720
@@ -260,29 +235,13 @@ class ViolationSnapshotManager {
       canvas.width  = size.width;
       canvas.height = size.height;
 
-      canvas.getContext('2d').drawImage(
-        this._screenVideo, 0, 0, canvas.width, canvas.height
-      );
+      canvas.getContext('2d').drawImage(this._screenVideo, 0, 0, canvas.width, canvas.height);
 
-      // Keep payloads small enough for Frappe request limits on high-DPI screens.
       return canvas.toDataURL('image/jpeg', 0.55);
     } catch (err) {
-      console.error('[ViolationSnapshot] Screen frame capture error:', err);
+      console.error('[ViolationSnapshot] Screen capture error:', err);
       return null;
     }
-  }
-
-  /**
-   * Resolve when the given <video> element has a renderable frame,
-   * or after 500 ms (safety timeout so capture never hangs indefinitely).
-   */
-  _waitForVideoFrame(videoEl) {
-    return new Promise((resolve) => {
-      if (videoEl && videoEl.readyState >= 2) { resolve(); return; }
-      const handler = () => { videoEl.removeEventListener('canplay', handler); resolve(); };
-      if (videoEl) videoEl.addEventListener('canplay', handler);
-      setTimeout(resolve, 500);
-    });
   }
 
   // ---------------------------------------------------------------------------

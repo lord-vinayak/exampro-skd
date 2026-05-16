@@ -317,9 +317,11 @@
         <table class="violation-table">
             <thead>
                 <tr>
-                    <th style="width: 12%;">Time</th>
-                    <th style="width: 18%;">Violation</th>
-                    <th style="width: 70%;">Evidence (Webcam & Screen)</th>
+                    <th style="width: 10%;">Time</th>
+                    <th style="width: 15%;">Violation</th>
+                    <th style="width: 25%;">Webcam</th>
+                    <th style="width: 25%;">Screen</th>
+                    <th style="width: 25%;">Mobile Camera</th>
                 </tr>
             </thead>
             <tbody>
@@ -329,29 +331,30 @@
                         <div style="font-weight: bold;">T+ {{ v.timestamp }}</div>
                         <div style="font-size: 9px; color: #888;">{{ v.absolute_time }}</div>
                     </td>
-                    <td><span class="badge badge-danger">{{ v.type }}</span></td>
                     <td>
-                        <div class="evidence-images" style="margin-left: 0; border-spacing: 5px; margin-bottom: 5px;">
-                            <div class="evidence-image-container">
-                                {% if v.webcam %}
-                                    <img src="{{ v.webcam }}" class="evidence-image" style="max-height: 100px; width: auto;" />
-                                    <div style="font-size: 8px; color: #999; text-align: center;">Webcam</div>
-                                {% else %}
-                                    <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; text-align: center; line-height: 60px; color: #ccc; font-size: 8px;">No Webcam</div>
-                                {% endif %}
-                            </div>
-                            <div class="evidence-image-container">
-                                {% if v.screen %}
-                                    <img src="{{ v.screen }}" class="evidence-image" style="max-height: 100px; width: auto;" />
-                                    <div style="font-size: 8px; color: #999; text-align: center;">Screen</div>
-                                {% else %}
-                                    <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; text-align: center; line-height: 60px; color: #ccc; font-size: 8px;">No Screen</div>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div style="font-size: 10px; color: #444; font-style: italic;">
-                            {{ v.message }}
-                        </div>
+                        <span class="badge badge-danger">{{ v.type }}</span>
+                        <div style="font-size: 9px; color: #444; font-style: italic; margin-top: 4px;">{{ v.message }}</div>
+                    </td>
+                    <td style="text-align: center;">
+                        {% if v.webcam %}
+                            <img src="{{ v.webcam }}" class="evidence-image" style="max-height: 100px; max-width: 100%; width: auto;" />
+                        {% else %}
+                            <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#bbb; font-size: 8px;">No Webcam</div>
+                        {% endif %}
+                    </td>
+                    <td style="text-align: center;">
+                        {% if v.screen %}
+                            <img src="{{ v.screen }}" class="evidence-image" style="max-height: 100px; max-width: 100%; width: auto;" />
+                        {% else %}
+                            <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#bbb; font-size: 8px;">No Screen</div>
+                        {% endif %}
+                    </td>
+                    <td style="text-align: center;">
+                        {% if v.mobile %}
+                            <img src="{{ v.mobile }}" class="evidence-image" style="max-height: 100px; max-width: 100%; width: auto;" />
+                        {% else %}
+                            <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#bbb; font-size: 8px;">No Mobile</div>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

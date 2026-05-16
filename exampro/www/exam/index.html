@@ -133,27 +133,7 @@ head_include %}
         </div>
       </div>
 
-      <!-- Mobile Camera Section -->
-      <div id="mobile-camera-section" style="display:none; margin-top:1.5rem;">
-        <h5>📱 Connect Mobile Camera</h5>
-        <p class="text-muted">Scan this QR code with your phone to set up the auxiliary camera.</p>
-        <div style="display:flex; gap:1.5rem; align-items:flex-start; flex-wrap:wrap;">
-          <div>
-            <canvas id="mobile-qr-canvas"></canvas>
-            <div style="margin-top:0.5rem; font-size:0.8rem; color:#666;">
-              Or open: <a id="mobile-qr-link" href="#" target="_blank"></a>
-            </div>
-          </div>
-          <div style="flex:1; min-width:200px;">
-            <div id="mobile-status-pending" class="alert alert-warning">
-              🔴 Waiting for mobile connection...
-            </div>
-            <div id="mobile-status-connected" class="alert alert-success" style="display:none;">
-              🟢 Mobile camera connected! You may start the exam.
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- Mobile camera modal is injected dynamically by examform.js -->
     </div>
     <div class="col-md-9">
       <!-- Main content -->
@@ -285,6 +265,14 @@ head_include %}
     </div>
   </div>
   {% endif %}
+  <!-- Mobile camera status badge (shown only when mobile proctoring is enabled) -->
+  {% if exam and exam.enable_mobile_proctoring %}
+  <div id="mobile-status-badge" style="position:fixed; bottom:1rem; right:1rem; z-index:9000; background:#1a1a1a; color:#fff; border-radius:999px; padding:0.35rem 0.9rem; font-size:0.78rem; font-weight:600; box-shadow:0 2px 8px rgba(0,0,0,0.35); display:flex; align-items:center; gap:0.4rem;">
+    <span id="mobile-badge-dot" style="width:8px;height:8px;border-radius:50%;background:#6c757d;display:inline-block;"></span>
+    <span id="mobile-badge-text">📱 Mobile</span>
+  </div>
+  {% endif %}
+
   <!-- No-face termination countdown banner -->
   <div id="noFaceBanner" style="display:none; position:fixed; top:0; left:0; right:0; z-index:9999; background:#dc3545; color:#fff; padding:15px 20px; text-align:center; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.3);">
     <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -325,7 +313,7 @@ head_include %}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="/assets/exampro/js/violationSnapshots.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 
 {% if exam.enable_video_proctoring %}
 <!-- MediaPipe dependencies -->

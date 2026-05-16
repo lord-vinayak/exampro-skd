@@ -1002,8 +1002,9 @@ var mobileGracePeriodSeconds = 60;
 async function initMobileCameraSection(examSubmission) {
   // Fetch exam doc to check if mobile proctoring is enabled
   try {
-    var examName = document.querySelector('[data-exam]') ?
-      document.querySelector('[data-exam]').dataset.exam : null;
+    // Use the global `exam` object injected by the Jinja template (var exam = {{ exam | tojson }})
+    // There is no [data-exam] DOM attribute in index.html.
+    var examName = (typeof exam !== 'undefined' && exam && exam.name) ? exam.name : null;
     if (!examName) return;
 
     var examDoc = await frappe.db.get_value('Exam', examName, ['enable_mobile_proctoring', 'mobile_grace_period']);

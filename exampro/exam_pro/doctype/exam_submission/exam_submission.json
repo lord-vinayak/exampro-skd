@@ -47,7 +47,9 @@
   "mobile_analysis_retries",
   "mobile_frame_count",
   "mobile_violation_count",
-  "room_scan_key"
+  "room_scan_key",
+  "mobile_snapshot_requested",
+  "mobile_snapshot_violation_ref"
  ],
  "fields": [
   {
@@ -333,6 +335,19 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "Room Scan S3 Key"
+  },
+  {
+   "default": "0",
+   "fieldname": "mobile_snapshot_requested",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Mobile Snapshot Requested"
+  },
+  {
+   "fieldname": "mobile_snapshot_violation_ref",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Mobile Snapshot Violation Ref"
   }
  ],
  "index_web_pages_for_search": 1,

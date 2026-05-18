@@ -180,6 +180,96 @@ def generate_mobile_token(exam_submission):
 
 
 @frappe.whitelist(allow_guest=True)
+def check_snapshot_request(token):
+    """
+    Polled by the mobile phone every 2 seconds.
+    Returns whether an instant snapshot is needed and which violation to link it to.
+    """
+    name, _status = _get_submission_by_token(token)
+    result = frappe.db.get_value(
+        "Exam Submission",
+        name,
+        ["mobile_snapshot_requested", "mobile_snapshot_violation_ref"],
+        as_dict=True,
+    )
+    return {
+        "snapshot_requested": bool(result.mobile_snapshot_requested),
+        "violation_ref": result.mobile_snapshot_violation_ref or "",
+    }
+
+
+@frappe.whitelist(allow_guest=True)
+def receive_instant_snapshot(token, frame_data, violation_ref=""):
+    """
+    Called by mobile when check_snapshot_request returns snapshot_requested=true.
+    Stores the frame to S3 and links it to the violation Exam Messages record.
+    """
+    name, _status = _get_submission_by_token(token)
+
+    key = _store_instant_frame(name, frame_data, violation_ref)
+
+    if key and violation_ref:
+        try:
+            frappe.db.set_value(
+                "Exam Messages",
+                violation_ref,
+                "mobile_snapshot_key",
+                key,
+                update_modified=False,
+            )
+        except Exception as e:
+            frappe.log_error(
+                f"Failed to link instant snapshot to violation {violation_ref}: {e}",
+                "Mobile Proctor: Instant Snapshot",
+            )
+
+    # Clear the pending request flag regardless of success
+    frappe.db.set_value(
+        "Exam Submission",
+        name,
+        {
+            "mobile_snapshot_requested": 0,
+            "mobile_snapshot_violation_ref": "",
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
+
+    return {"status": "ok", "key": key or ""}
+
+
+def _store_instant_frame(exam_submission, base64_data, violation_ref):
+    """Store an instant (on-demand) mobile snapshot to S3."""
+    from exampro.exam_pro.doctype.exam_submission.exam_submission import get_s3_client
+
+    try:
+        settings = frappe.get_single("Exam Settings")
+        s3_client = get_s3_client()
+
+        if "," in base64_data:
+            base64_data = base64_data.split(",", 1)[1]
+
+        image_bytes = base64.b64decode(base64_data)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        safe_ref = (violation_ref or "unknown").replace("/", "_")
+        key = f"{exam_submission}/instant_snapshots/{safe_ref}_{ts}.jpg"
+
+        s3_client.upload_fileobj(
+            io.BytesIO(image_bytes),
+            settings.s3_bucket,
+            key,
+            ExtraArgs={"ContentType": "image/jpeg"},
+        )
+        return key
+    except Exception as e:
+        frappe.log_error(
+            f"Instant snapshot upload failed for {exam_submission}: {e}",
+            "Mobile Proctor: Instant Snapshot",
+        )
+        return None
+
+
+@frappe.whitelist(allow_guest=True)
 def upload_room_scan(token):
     """
     Called after the candidate records the 15s room scan video.

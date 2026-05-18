@@ -1264,7 +1264,7 @@ def save_violation_snapshot(
 	if warning_type != violation_type:
 		msg_parts.append(f"(violation: {violation_type})")
 
-	frappe.get_doc({
+	msg_doc = frappe.get_doc({
 		"doctype": "Exam Messages",
 		"exam_submission": exam_submission,
 		"timestamp": frappe.utils.now(),
@@ -1276,6 +1276,24 @@ def save_violation_snapshot(
 		"webcam_snapshot_key": uploaded_webcam_key,
 		"screen_snapshot_key": uploaded_screen_key,
 	}).insert(ignore_permissions=True)
+
+	# Request an instant mobile snapshot tied to this violation.
+	# The mobile phone polls check_snapshot_request every 2s and will
+	# immediately upload a frame linked back to msg_doc.name.
+	try:
+		exam = frappe.db.get_value("Exam Submission", exam_submission, "exam")
+		if frappe.db.get_value("Exam", exam, "enable_mobile_proctoring"):
+			frappe.db.set_value(
+				"Exam Submission",
+				exam_submission,
+				{
+					"mobile_snapshot_requested": 1,
+					"mobile_snapshot_violation_ref": msg_doc.name,
+				},
+				update_modified=False,
+			)
+	except Exception:
+		pass  # non-critical — don't fail the violation save
 
 	frappe.db.commit()
 

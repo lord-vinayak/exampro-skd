@@ -288,7 +288,7 @@ def _run_analysis(exam_submission):
             continue
 
         # 4. Process each result
-        for result, key, img_bytes in zip(results, valid_keys, batch_images):
+        for result, key in zip(results, valid_keys):
             violation = _classify_result(result, model.names)
             if violation:
                 # Keep the frame — store S3 key and create Exam Messages record
@@ -389,6 +389,13 @@ def _classify_result(result, names):
 
 def _save_violation(exam_submission, candidate, violation_type, s3_key):
     """Insert an Exam Messages record for a detected post-exam violation."""
+    # Idempotency: don't insert a duplicate if this job was retried
+    if frappe.db.exists(
+        "Exam Messages",
+        {"exam_submission": exam_submission, "mobile_snapshot_key": s3_key},
+    ):
+        return  # already recorded — skip silently
+
     label = _VIOLATION_LABELS.get(violation_type, violation_type)
     try:
         frappe.get_doc({

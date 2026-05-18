@@ -17,8 +17,10 @@
 
   let wakeLock = null;
   let frameInterval = null;
+  let snapshotInterval = null;
   let consecutiveErrors = 0;
   let frameSeq = 0;
+  let snapshotInFlight = false;   // prevent overlapping instant-snapshot requests
 
   // ---------------------------------------------------------------------------
   // Status helpers
@@ -118,6 +120,7 @@
 
       if (result && result.status === 'exam_ended') {
         clearInterval(frameInterval);
+        clearInterval(snapshotInterval);
         setStatus('✅ Exam ended', 'secondary');
         if (errorBox) {
           errorBox.textContent = 'The exam has ended. You may close this page.';
@@ -129,6 +132,33 @@
       if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
         setStatus('🔴 Connection lost — retrying...', 'danger');
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Instant snapshot (on-demand, triggered by violation on exam page)
+  // ---------------------------------------------------------------------------
+
+  async function checkAndSendInstantSnapshot() {
+    if (snapshotInFlight) return;   // don't overlap
+    try {
+      const result = await callApi('check_snapshot_request', { token: TOKEN });
+      if (!result || !result.snapshot_requested) return;
+
+      snapshotInFlight = true;
+      try {
+        const frameData = captureJpeg();
+        await callApi('receive_instant_snapshot', {
+          token: TOKEN,
+          frame_data: frameData,
+          violation_ref: result.violation_ref || '',
+        });
+      } finally {
+        snapshotInFlight = false;
+      }
+    } catch (e) {
+      snapshotInFlight = false;
+      // silently ignore — non-critical path
     }
   }
 
@@ -263,6 +293,9 @@
 
     setStatus('🟢 Connected — streaming to proctor', 'success');
     frameInterval = setInterval(sendFrame, FRAME_INTERVAL_MS);
+
+    // Poll for on-demand snapshot requests every 2 seconds
+    snapshotInterval = setInterval(checkAndSendInstantSnapshot, 2000);
 
     // Send first frame immediately
     sendFrame();

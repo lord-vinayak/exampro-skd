@@ -35,6 +35,16 @@ class ExamMessages(Document):
 		# 		user=proctor
 		# 	)
 		if self.type_of_message == "Warning":
+			# Skip warning count and termination logic for post-exam analysis violations.
+			# Exams that are already Submitted or Terminated cannot be terminated again,
+			# and the batch mobile analysis inserts many violation records at once which
+			# would otherwise race-condition the warning_count and trigger false terminations.
+			sub_status = frappe.db.get_value(
+				"Exam Submission", self.exam_submission, "status"
+			)
+			if sub_status in ("Submitted", "Terminated"):
+				return
+
 			wc = frappe.db.get_value("Exam Submission", self.exam_submission, "warning_count") or 0
 			new_wc = wc + 1
 			frappe.db.set_value(

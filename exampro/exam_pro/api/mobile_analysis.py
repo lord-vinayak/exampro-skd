@@ -292,13 +292,25 @@ def _run_analysis(exam_submission):
             violation = _classify_result(result, model.names)
             if violation:
                 # Keep the frame — store S3 key and create Exam Messages record
-                _save_violation(
-                    exam_submission=exam_submission,
-                    candidate=candidate,
-                    violation_type=violation,
-                    s3_key=key,
-                )
-                violation_count += 1
+                try:
+                    frappe.db.begin()
+                    _save_violation(
+                        exam_submission=exam_submission,
+                        candidate=candidate,
+                        violation_type=violation,
+                        s3_key=key,
+                    )
+                    frappe.db.commit()
+                    violation_count += 1
+                except Exception:
+                    frappe.log_error(
+                        frappe.get_traceback(),
+                        f"Mobile Analysis: Save violation skipped ({key})",
+                    )
+                    try:
+                        frappe.db.rollback()
+                    except Exception:
+                        pass
             else:
                 # Mark for deletion to save storage
                 keys_to_delete.append(key)
@@ -335,21 +347,41 @@ def _classify_result(result, names):
     """
     Given a single YOLOv8 result, return a violation type string or None.
     Priority: second_person > phone > notes > no_person
+
+    Confidence thresholds prevent false positives:
+    - PERSON_CONF: 0.55  — reduces duplicate head+body detections of same person
+    - OBJ_CONF:    0.45  — reasonable threshold for phone/book detection
+    Both thresholds are deliberately higher than YOLO's default (0.25).
     """
+    PERSON_CONF = 0.55
+    OBJ_CONF    = 0.45
+
     if result.boxes is None or len(result.boxes) == 0:
         return "mobile_noface"
 
-    detected = [names[int(c)].lower() for c in result.boxes.cls]
+    boxes = result.boxes
+    person_count = 0
+    detected_objects = []
 
-    person_count = detected.count(_PERSON_CLASS)
+    for i, cls in enumerate(boxes.cls):
+        class_name = names[int(cls)].lower()
+        conf = float(boxes.conf[i])
+
+        if class_name == _PERSON_CLASS:
+            if conf >= PERSON_CONF:
+                person_count += 1
+        elif class_name in _VIOLATION_CLASSES:
+            if conf >= OBJ_CONF:
+                detected_objects.append(class_name)
+
     if person_count == 0:
         return "mobile_noface"
     if person_count > 1:
         return "mobile_second_person"
 
-    if "cell phone" in detected:
+    if "cell phone" in detected_objects:
         return "mobile_phone_detected"
-    if "book" in detected:
+    if "book" in detected_objects:
         return "mobile_notes_detected"
 
     return None   # clean frame

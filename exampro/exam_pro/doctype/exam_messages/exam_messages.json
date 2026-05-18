@@ -58,7 +58,7 @@
    "fieldname": "warning_type",
    "fieldtype": "Select",
    "label": "Warning Type",
-   "options": "tabchange\nmonitorchange\nnowebcam\nnoface\nmultiplefaces\ngazeaway\nnofacetimeout\nappswitch\nmobile_noface\nmobile_multiplefaces\nmobile_disconnect\nmobile_device_detected\nother"
+   "options": "tabchange\nmonitorchange\nnowebcam\nnoface\nmultiplefaces\ngazeaway\nnofacetimeout\nappswitch\nmobile_noface\nmobile_multiplefaces\nmobile_disconnect\nmobile_device_detected\nmobile_second_person\nmobile_phone_detected\nmobile_notes_detected\nother"
   },
   {
    "fieldname": "timestamp",

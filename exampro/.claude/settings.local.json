@@ -43,7 +43,8 @@
       "Bash(wsl -e bash -c \"ls ~/frappe-dev/exampro-bench/\")",
       "Bash(ls \"\\\\\\\\\\\\\\\\wsl.localhost\\\\\\\\ubuntu\\\\\\\\home\\\\\\\\vinayak\\\\\\\\frappe-dev\\\\\\\\exampro-bench\\\\\\\\sites\\\\\\\\\")",
       "WebFetch(domain:ai.google.dev)",
-      "Bash(wsl -e bash -c \"find ~/frappe-dev/exampro-bench/env/lib -name '*.task' -o -name 'blaze_face*' 2>/dev/null | head -10; find ~/frappe-dev/exampro-bench/env/lib -path '*mediapipe*' -name '*.tflite' 2>/dev/null | head -10\")"
+      "Bash(wsl -e bash -c \"find ~/frappe-dev/exampro-bench/env/lib -name '*.task' -o -name 'blaze_face*' 2>/dev/null | head -10; find ~/frappe-dev/exampro-bench/env/lib -path '*mediapipe*' -name '*.tflite' 2>/dev/null | head -10\")",
+      "Bash(bench --site exampro.local migrate)"
     ]
   }
 }

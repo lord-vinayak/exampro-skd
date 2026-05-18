@@ -19,7 +19,20 @@ WARNING_TYPE_LABELS = {
     "gazeaway": "Gaze Away",
     "nofacetimeout": "No Face (Timeout)",
     "appswitch": "App Switch",
-    "other": "Other Violation"
+    "mobile_noface": "Mobile: No Person",
+    "mobile_multiplefaces": "Mobile: Multiple Faces",
+    "mobile_disconnect": "Mobile: Disconnected",
+    "mobile_device_detected": "Mobile: Device Detected",
+    "mobile_second_person": "Mobile: Second Person",
+    "mobile_phone_detected": "Mobile: Phone Detected",
+    "mobile_notes_detected": "Mobile: Notes Detected",
+    "other": "Other Violation",
+}
+
+MOBILE_WARNING_TYPES = {
+    "mobile_noface", "mobile_multiplefaces", "mobile_disconnect",
+    "mobile_device_detected", "mobile_second_person",
+    "mobile_phone_detected", "mobile_notes_detected",
 }
 
 @frappe.whitelist()
@@ -149,6 +162,12 @@ def get_report_context(doc):
             mobile_img = None
             snapshot_diff = round(best_diff, 1) if matched else None
 
+        # Only include mobile image for mobile-source violations
+        if msg.warning_type in MOBILE_WARNING_TYPES:
+            mobile_img = mobile_img  # already set above from key_images
+            webcam_img = None
+            screen_img = None
+
         formatted_violations.append({
             "type": label,
             "raw_type": msg.warning_type,
@@ -160,7 +179,24 @@ def get_report_context(doc):
             "screen": screen_img,
             "mobile": mobile_img,
             "snapshot_ts_diff": snapshot_diff,
+            "is_mobile_violation": msg.warning_type in MOBILE_WARNING_TYPES,
         })
+
+    # Build auxiliary camera report (post-exam object detection results)
+    aux_camera_violations = [v for v in formatted_violations if v["is_mobile_violation"]]
+
+    # Room scan presigned URL
+    room_scan_url = None
+    room_scan_key = getattr(doc, "room_scan_key", None)
+    if room_scan_key:
+        try:
+            room_scan_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": settings.s3_bucket, "Key": room_scan_key},
+                ExpiresIn=3600,
+            )
+        except Exception:
+            pass
 
     return {
         "doc": doc,
@@ -186,12 +222,19 @@ def get_report_context(doc):
         "total_distracted_time_seconds": round(doc.total_distracted_time or 0, 1),
         "max_warning_count": exam.max_warning_count,
         "video_proctoring_enabled": getattr(exam, 'enable_video_proctoring', None),
+        "mobile_proctoring_enabled": getattr(exam, 'enable_mobile_proctoring', None),
+        "mobile_analysis_status": getattr(doc, "mobile_analysis_status", "Pending"),
+        "mobile_frame_count": getattr(doc, "mobile_frame_count", 0) or 0,
+        "mobile_violation_count": getattr(doc, "mobile_violation_count", 0) or 0,
         "tracking_features": get_tracking_features(exam),
         "violations": formatted_violations,
         "violation_summary": violation_summary,
         "evidence_log": evidence_log,
         "has_violations": len(formatted_violations) > 0,
         "has_evidence": len(evidence_log) > 0,
+        "aux_camera_violations": aux_camera_violations,
+        "has_aux_camera_violations": len(aux_camera_violations) > 0,
+        "room_scan_url": room_scan_url,
         "generated_at": frappe.utils.format_datetime(frappe.utils.now_datetime(), "dd MMM yyyy hh:mm a"),
         "generated_by": frappe.session.user,
     }

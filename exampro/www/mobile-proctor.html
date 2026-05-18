@@ -7,6 +7,30 @@
     <p class="text-muted" id="exam-title">Connecting...</p>
   </div>
 
+  <!-- Room scan section (shown only if require_room_scan is true and not yet done) -->
+  {% if require_room_scan %}
+  <div id="room-scan-section" style="margin-bottom:1.5rem;">
+    <div class="alert alert-info" style="font-size:0.9rem;">
+      <strong>📹 Room Scan Required</strong><br>
+      Please record a 15-second video showing your exam room environment (desk, surroundings, and that you are alone).
+    </div>
+    <video id="room-scan-preview" autoplay muted playsinline
+           style="display:none; width:100%; border-radius:8px; margin-bottom:0.75rem; background:#000;">
+    </video>
+    <div style="display:flex; gap:0.75rem; margin-bottom:0.75rem;">
+      <button id="room-scan-record-btn" class="btn btn-danger" style="flex:1;">
+        🔴 Start Recording
+      </button>
+      <button id="room-scan-upload-btn" class="btn btn-primary" style="flex:1;" disabled>
+        ⬆️ Upload
+      </button>
+    </div>
+    <p id="room-scan-status" class="text-muted" style="font-size:0.85rem; text-align:center;"></p>
+  </div>
+  {% else %}
+  <!-- Placeholder so JS can detect absence of room scan requirement -->
+  {% endif %}
+
   <!-- Camera preview -->
   <div style="position:relative; border-radius:12px; overflow:hidden; background:#000; margin-bottom:1rem;">
     <video id="mobile-video"
@@ -28,7 +52,8 @@
   <!-- Instructions -->
   <div class="alert alert-warning" style="font-size:0.85rem;">
     ⚠️ <strong>Keep this page open</strong> for the entire exam.<br>
-    Do not lock your screen or switch apps.
+    Do not lock your screen or switch apps.<br>
+    Your camera is being monitored. Frames are captured every 10 seconds.
   </div>
 
   <!-- Wake lock warning (shown if unsupported) -->

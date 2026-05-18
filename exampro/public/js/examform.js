@@ -384,12 +384,15 @@ function activateDetector() {
             warningThreshold: 1,
 
             // Fires the instant the page is hidden / window loses focus.
-            // The webcam still has the last live frame at this moment.
+            // Webcam is grabbed synchronously right now. Screen capture is
+            // delayed 200ms so the screen stream updates to show the switched-to
+            // app/tab rather than the exam page (which is still rendering).
             onInactivityStart: () => {
                 if (violationSnapshots && exam.submission_status === 'Started' && !examEnded) {
                     violationSnapshots.capture(
                         'tabchange',
-                        'Candidate switched away from the exam tab or window.'
+                        'Candidate switched away from the exam tab or window.',
+                        { screenDelay: 200 }
                     );
                 }
             },
@@ -398,8 +401,8 @@ function activateDetector() {
                 tabChangeStr = `Tab changed detected for ${secondsInactive} seconds.`;
                 console.log(tabChangeStr);
 
-                // Secondary capture on return — queued separately so both
-                // the departure and return moments are recorded.
+                // Secondary capture on return — records the moment of return.
+                // No screenDelay needed here: candidate is back on the exam tab.
                 if (violationSnapshots && exam.submission_status === 'Started' && !examEnded) {
                     violationSnapshots.capture(
                         'tabchange',

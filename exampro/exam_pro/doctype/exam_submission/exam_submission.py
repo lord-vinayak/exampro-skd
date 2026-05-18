@@ -275,6 +275,15 @@ class ExamSubmission(Document):
 				next_evaluator = min(evaluators, key=lambda x: current_counts.get(x, {}).get('evaluation_count', 0))
 				self.assigned_evaluator = next_evaluator
 
+	def on_update(self):
+		"""Trigger post-exam mobile analysis when submission is finalised."""
+		if self.status in ("Submitted", "Terminated"):
+			try:
+				from exampro.exam_pro.api.mobile_analysis import enqueue_mobile_analysis
+				enqueue_mobile_analysis(self.name)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Mobile Analysis Enqueue Error")
+
 	def before_insert(self):
 		# Check if there are any existing submissions for the same candidate and schedule
 		# that are NOT in ["Terminated", "Submitted"]

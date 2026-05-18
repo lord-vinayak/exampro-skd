@@ -18,6 +18,7 @@
   "enable_video_proctoring",
   "enable_mobile_proctoring",
   "mobile_grace_period",
+  "require_room_scan",
   "enable_calculator",
   "enable_chat",
   "max_warning_count",
@@ -255,6 +256,14 @@
    "fieldname": "mobile_grace_period",
    "fieldtype": "Int",
    "label": "Mobile Camera Grace Period (seconds)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_mobile_proctoring",
+   "description": "Candidate must record a 15-second 360° video of their room before starting the exam",
+   "fieldname": "require_room_scan",
+   "fieldtype": "Check",
+   "label": "Require Room Scan Video"
   },
   {
    "default": "3",

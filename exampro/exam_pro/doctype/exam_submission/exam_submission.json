@@ -42,7 +42,12 @@
   "retina_location_log",
   "mobile_camera_status",
   "mobile_session_token",
-  "mobile_last_seen"
+  "mobile_last_seen",
+  "mobile_analysis_status",
+  "mobile_analysis_retries",
+  "mobile_frame_count",
+  "mobile_violation_count",
+  "room_scan_key"
  ],
  "fields": [
   {
@@ -291,6 +296,43 @@
    "fieldtype": "Datetime",
    "hidden": 1,
    "label": "Mobile Camera Last Seen"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "mobile_analysis_status",
+   "fieldtype": "Select",
+   "in_list_view": 0,
+   "label": "Mobile Analysis Status",
+   "options": "Pending\nQueued\nProcessing\nComplete\nFailed",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "mobile_analysis_retries",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Mobile Analysis Retries",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "mobile_frame_count",
+   "fieldtype": "Int",
+   "label": "Mobile Frames Captured",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "mobile_violation_count",
+   "fieldtype": "Int",
+   "label": "Mobile Violations Found",
+   "read_only": 1
+  },
+  {
+   "fieldname": "room_scan_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Room Scan S3 Key"
   }
  ],
  "index_web_pages_for_search": 1,

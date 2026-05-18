@@ -129,36 +129,50 @@ class ViolationSnapshotManager {
    * @param {string} violationType  'tabchange' | 'multiplefaces' | 'noface' |
    *                                'gazeaway'  | 'monitorchange' | 'appswitch'
    * @param {string} [description]  Human-readable detail shown to the proctor
+   * @param {Object} [opts]
+   * @param {number} [opts.screenDelay=0]  ms to wait before capturing the screen frame.
+   *   Pass ~200 for tab-switch violations so the screen stream has time to update
+   *   and show the switched-to app rather than the exam tab.
    */
-  capture(violationType, description = '') {
+  capture(violationType, description = '', opts = {}) {
     if (!this._canCapture(violationType)) {
       console.log(`[ViolationSnapshot] Cooldown active for "${violationType}", skipping.`);
       return;
     }
 
-    // Grab pixels RIGHT NOW synchronously — before any await or network call.
-    // This ensures the snapshot reflects the exact moment the violation fired.
+    // Always grab webcam synchronously RIGHT NOW — reflects the exact violation moment.
     const webcamSnapshot = this._captureWebcamSync();
-    const screenSnapshot = this._captureScreenSync();
-
     this._lastCaptureTime[violationType] = Date.now();
 
-    if (!webcamSnapshot && !screenSnapshot) {
-      console.warn('[ViolationSnapshot] Both snapshots null, nothing to upload.');
-      return;
-    }
+    const screenDelay = opts.screenDelay || 0;
 
-    // Upload in the background — don't block the caller.
-    this._upload(violationType, description, webcamSnapshot, screenSnapshot)
-      .then((result) => {
-        if (result && this.options.onSnapshotCaptured) {
-          this.options.onSnapshotCaptured(violationType, result.snapshot_urls || {});
-        }
-      })
-      .catch((err) => {
-        console.error(`[ViolationSnapshot] Upload failed for "${violationType}":`, err);
-        if (this.options.onSnapshotError) this.options.onSnapshotError(violationType, err);
-      });
+    const doUpload = () => {
+      // Capture screen now (either immediately or after the delay).
+      const screenSnapshot = this._captureScreenSync();
+
+      if (!webcamSnapshot && !screenSnapshot) {
+        console.warn('[ViolationSnapshot] Both snapshots null, nothing to upload.');
+        return;
+      }
+
+      // Upload in the background — don't block the caller.
+      this._upload(violationType, description, webcamSnapshot, screenSnapshot)
+        .then((result) => {
+          if (result && this.options.onSnapshotCaptured) {
+            this.options.onSnapshotCaptured(violationType, result.snapshot_urls || {});
+          }
+        })
+        .catch((err) => {
+          console.error(`[ViolationSnapshot] Upload failed for "${violationType}":`, err);
+          if (this.options.onSnapshotError) this.options.onSnapshotError(violationType, err);
+        });
+    };
+
+    if (screenDelay > 0) {
+      setTimeout(doUpload, screenDelay);
+    } else {
+      doUpload();
+    }
   }
 
   /**

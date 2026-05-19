@@ -285,18 +285,6 @@ function startRecording() {
                             }
                         },
 
-                        onGazeChange: (gazeState, gazeData) => {
-                            if (gazeState === 'away' &&
-                                exam.submission_status === 'Started' &&
-                                !examEnded &&
-                                violationSnapshots) {
-                                violationSnapshots.capture(
-                                    'gazeaway',
-                                    'Candidate gaze directed away from the screen.'
-                                );
-                            }
-                        },
-
                         onPostTrackingData: (trackingData) => {
                             if (exam.submission_status !== "Started") return;
                             frappe.call({

@@ -35,7 +35,6 @@ _VIOLATION_LABELS = {
     "mobile_second_person":  "Mobile: Second person detected",
     "mobile_phone_detected": "Mobile: Phone/device detected",
     "mobile_notes_detected": "Mobile: Notes/book detected",
-    "mobile_noface":         "Mobile: No person in frame",
 }
 
 # ---------------------------------------------------------------------------
@@ -357,7 +356,7 @@ def _classify_result(result, names):
     OBJ_CONF    = 0.45
 
     if result.boxes is None or len(result.boxes) == 0:
-        return "mobile_noface"
+        return None   # no detections — treat as clean frame
 
     boxes = result.boxes
     person_count = 0
@@ -375,7 +374,7 @@ def _classify_result(result, names):
                 detected_objects.append(class_name)
 
     if person_count == 0:
-        return "mobile_noface"
+        return None   # no face visible — not flagged
     if person_count > 1:
         return "mobile_second_person"
 
@@ -460,7 +459,6 @@ def get_mobile_analysis_results(exam_submission):
                 "mobile_second_person",
                 "mobile_phone_detected",
                 "mobile_notes_detected",
-                "mobile_noface",
                 "mobile_multiplefaces",
                 "mobile_disconnect",
                 "mobile_device_detected",

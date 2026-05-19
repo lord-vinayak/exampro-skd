@@ -244,7 +244,6 @@
    "label": "Enable Video Proctoring"
   },
   {
-   "depends_on": "eval:doc.enable_video_proctoring",
    "fieldname": "enable_mobile_proctoring",
    "fieldtype": "Check",
    "label": "Enable Mobile Camera Proctoring"

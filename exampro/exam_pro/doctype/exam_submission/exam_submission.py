@@ -856,6 +856,32 @@ def exam_video_list(exam_submission):
 	
 	return res
 
+@frappe.whitelist()
+def get_room_scan_url(exam_submission):
+	"""Return a 1-hour presigned S3 URL for the room scan video, or None if not uploaded."""
+	if frappe.session.user == "Guest":
+		raise frappe.PermissionError(_("Please login to access this page."))
+
+	key = frappe.db.get_value("Exam Submission", exam_submission, "room_scan_key")
+	if not key:
+		return None
+
+	try:
+		settings = frappe.get_single("Exam Settings")
+		s3_client = get_s3_client()
+		return s3_client.generate_presigned_url(
+			"get_object",
+			Params={"Bucket": settings.s3_bucket, "Key": key},
+			ExpiresIn=3600,
+		)
+	except Exception as e:
+		frappe.log_error(
+			f"Room scan URL generation failed for {exam_submission}: {e}",
+			"Room Scan: Presigned URL",
+		)
+		return None
+
+
 #########################
 ### Examiner APIs ########
 #########################

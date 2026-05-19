@@ -22,6 +22,7 @@
   "exam_submitted_time",
   "video_section",
   "candidate_video",
+  "room_scan_video",
   "result_tab",
   "total_marks",
   "result_status",
@@ -185,6 +186,12 @@
    "fieldtype": "HTML",
    "label": "Candidate Video",
    "options": "<div id=\"videoDiv\" class=\"hidden\">\n<video id=\"candidateVideo\" style=\"max-width: 400px;\"></video>\n  <div id=\"controls\" class=\"icon-group\">\n    <button class=\"btn btn-light\" id=\"previous-btn\">\u23ee\ufe0f</button>\n    <button class=\"btn btn-light\" id=\"play-pause-btn\">\u25b6\ufe0f/\u23f8\ufe0f</button>\n    <button class=\"btn btn-light\" id=\"next-btn\">\u23ed\ufe0f</button>\n<input type=\"text\" id=\"index-field\" readonly>\n  </div>\n</div>"
+  },
+  {
+   "fieldname": "room_scan_video",
+   "fieldtype": "HTML",
+   "label": "Room Scan Video",
+   "options": "<div id=\"roomScanDiv\" class=\"hidden\" style=\"margin-top:1rem;\">\n  <label class=\"control-label\" style=\"font-weight:600;\">\ud83d\udcf9 Room Scan Recording</label>\n  <div style=\"margin-top:0.5rem;\">\n    <video id=\"roomScanVideo\" controls style=\"max-width:400px; border-radius:8px;\"></video>\n  </div>\n</div>"
   },
   {
    "fetch_from": "candidate.full_name",

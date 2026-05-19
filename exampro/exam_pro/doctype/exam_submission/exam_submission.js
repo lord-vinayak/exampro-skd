@@ -101,6 +101,20 @@ frappe.ui.form.on("Exam Submission", {
             }, 100);
         }
 
+        // Room scan video viewer
+        if (frm.doc.room_scan_key) {
+            frappe.call({
+                method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.get_room_scan_url',
+                args: { exam_submission: frm.doc.name },
+                callback: function(r) {
+                    if (r.message) {
+                        $('#roomScanDiv').removeClass('hidden');
+                        document.getElementById('roomScanVideo').src = r.message;
+                    }
+                }
+            });
+        }
+
         // Mobile snapshots viewer
         if (frm.doc.mobile_camera_status && frm.doc.mobile_camera_status !== 'Pending') {
             renderMobileSnapshots(frm);

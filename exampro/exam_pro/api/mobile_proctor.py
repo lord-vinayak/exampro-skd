@@ -310,12 +310,10 @@ def upload_room_scan(token):
             ExtraArgs={"ContentType": file.content_type or "video/webm"},
         )
 
-        frappe.db.set_value(
-            "Exam Submission",
-            name,
-            "room_scan_key",
-            key,
-            update_modified=False,
+        # Use raw SQL to avoid optimistic-locking conflict with concurrent receive_frame calls
+        frappe.db.sql(
+            "UPDATE `tabExam Submission` SET `room_scan_key` = %s WHERE `name` = %s",
+            (key, name),
         )
         frappe.db.commit()
 

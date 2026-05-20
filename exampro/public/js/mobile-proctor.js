@@ -184,7 +184,7 @@
 
       recordBtn.addEventListener('click', async () => {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
           previewEl.srcObject = stream;
           previewEl.style.display = '';
 
@@ -271,13 +271,6 @@
       return;
     }
 
-    // Room scan (if section is present, the exam requires it)
-    const roomScanSection = document.getElementById('room-scan-section');
-    if (roomScanSection) {
-      setStatus('📷 Please complete the room scan first.', 'warning');
-      await handleRoomScan();
-    }
-
     setStatus('⏳ Requesting camera access...', 'secondary');
 
     try {
@@ -297,8 +290,18 @@
     // Poll for on-demand snapshot requests every 2 seconds
     snapshotInterval = setInterval(checkAndSendInstantSnapshot, 2000);
 
-    // Send first frame immediately
+    // Send first frame immediately so the laptop shows "connected"
     sendFrame();
+
+    // Room scan — shown AFTER connection is established so the proctor can
+    // see the candidate is online before they turn the phone to scan the room.
+    const roomScanSection = document.getElementById('room-scan-section');
+    if (roomScanSection) {
+      setStatus('📹 Please complete the room scan.', 'warning');
+      roomScanSection.style.display = '';
+      await handleRoomScan();
+      setStatus('🟢 Connected — streaming to proctor', 'success');
+    }
   }
 
   init();

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import os
 import frappe
 from frappe.utils import now
 
@@ -107,8 +108,25 @@ def get_live_exam(member=None):
 	return exam_details
 
 
+def _get_asset_version():
+	"""
+	Returns an integer derived from the mtime of the built examform.js.
+	This changes automatically on every `bench build`, so browsers always
+	fetch fresh JS without any manual version bumping.
+	Falls back to 1 if the file cannot be found (e.g. first install).
+	"""
+	try:
+		js_path = os.path.join(
+			frappe.local.sites_path, "assets", "exampro", "js", "examform.js"
+		)
+		return int(os.path.getmtime(js_path))
+	except Exception:
+		return 1
+
+
 def get_context(context):
 	context.no_cache = 1
+	context.asset_version = _get_asset_version()
 
 	if frappe.session.user == "Guest":
 		frappe.local.flags.redirect_location = "/login"

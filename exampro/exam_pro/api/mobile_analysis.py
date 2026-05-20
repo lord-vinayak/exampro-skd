@@ -16,7 +16,7 @@ Detection targets (COCO classes):
   - person count > 1  → mobile_second_person
   - cell phone        → mobile_phone_detected
   - book              → mobile_notes_detected
-  - person count == 0 → mobile_noface  (reuses existing warning type)
+  - person count == 0 → clean frame (not flagged)
 """
 
 import io

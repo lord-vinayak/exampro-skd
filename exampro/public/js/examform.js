@@ -376,12 +376,25 @@ function activateDetector() {
             // delayed 200ms so the screen stream updates to show the switched-to
             // app/tab rather than the exam page (which is still rendering).
             onInactivityStart: () => {
-                if (violationSnapshots && exam.submission_status === 'Started' && !examEnded) {
+                if (exam.submission_status !== 'Started' || examEnded) return;
+                if (violationSnapshots) {
                     violationSnapshots.capture(
                         'tabchange',
                         'Candidate switched away from the exam tab or window.',
                         { screenDelay: 200 }
                     );
+                } else {
+                    // No snapshot manager (video proctoring off or screen share not yet
+                    // granted) — still record the violation as a warning message.
+                    frappe.call({
+                        method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.post_exam_message',
+                        args: {
+                            exam_submission: exam.exam_submission,
+                            message: 'Candidate switched away from the exam tab or window.',
+                            type_of_message: 'Warning',
+                            warning_type: 'tabchange',
+                        },
+                    });
                 }
             },
 

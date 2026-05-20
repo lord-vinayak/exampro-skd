@@ -32,7 +32,7 @@ _PERSON_CLASS = "person"
 
 # Human-readable labels for the report
 _VIOLATION_LABELS = {
-    "mobile_second_person":  "Mobile: Second person detected",
+    "mobile_second_person":  "Mobile: Second person detected", #remove
     "mobile_phone_detected": "Mobile: Phone/device detected",
     "mobile_notes_detected": "Mobile: Notes/book detected",
 }
@@ -352,7 +352,7 @@ def _classify_result(result, names):
     - OBJ_CONF:    0.45  — reasonable threshold for phone/book detection
     Both thresholds are deliberately higher than YOLO's default (0.25).
     """
-    PERSON_CONF = 0.55
+    PERSON_CONF = 0.55 #change 
     OBJ_CONF    = 0.45
 
     if result.boxes is None or len(result.boxes) == 0:

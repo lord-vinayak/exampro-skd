@@ -7,8 +7,7 @@
     <p class="text-muted" id="exam-title">Connecting...</p>
   </div>
 
-  <!-- Room scan section (shown only if require_room_scan is true and not yet done) -->
-  {% if require_room_scan %}
+  <!-- Room scan section — always in DOM, shown/hidden by JS based on API response -->
   <div id="room-scan-section" style="display:none; margin-bottom:1.5rem;">
     <div class="alert alert-info" style="font-size:0.9rem;">
       <strong>📹 Room Scan Required</strong><br>
@@ -27,9 +26,6 @@
     </div>
     <p id="room-scan-status" class="text-muted" style="font-size:0.85rem; text-align:center;"></p>
   </div>
-  {% else %}
-  <!-- Placeholder so JS can detect absence of room scan requirement -->
-  {% endif %}
 
   <!-- Camera preview -->
   <div style="position:relative; border-radius:12px; overflow:hidden; background:#000; margin-bottom:1rem;">

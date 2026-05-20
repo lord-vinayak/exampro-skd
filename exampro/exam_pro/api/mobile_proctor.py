@@ -89,12 +89,22 @@ def _store_frame_to_s3(exam_submission, base64_data, frame_seq):
 def validate_mobile_token(token):
     """
     Called by mobile page on load to confirm the token is valid.
-    Returns exam_submission name and exam title.
+    Returns exam_submission name, exam title, and room scan requirements.
     """
     name, _status = _get_submission_by_token(token)
-    exam = frappe.db.get_value("Exam Submission", name, "exam")
+    result = frappe.db.get_value(
+        "Exam Submission", name, ["exam", "room_scan_key"], as_dict=True
+    )
+    exam = result.exam
     exam_title = frappe.db.get_value("Exam", exam, "title")
-    return {"valid": True, "exam_submission": name, "exam_title": exam_title}
+    require_room_scan = bool(frappe.db.get_value("Exam", exam, "require_room_scan"))
+    room_scan_done = bool(result.room_scan_key)
+    return {
+        "valid": True,
+        "exam_submission": name,
+        "exam_title": exam_title,
+        "require_room_scan": require_room_scan and not room_scan_done,
+    }
 
 
 @frappe.whitelist(allow_guest=True)

@@ -168,7 +168,6 @@
 
   async function handleRoomScan() {
     const roomScanSection = document.getElementById('room-scan-section');
-    if (!roomScanSection) return;   // not required for this exam
 
     return new Promise((resolve) => {
       const recordBtn  = document.getElementById('room-scan-record-btn');
@@ -293,12 +292,10 @@
     // Send first frame immediately so the laptop shows "connected"
     sendFrame();
 
-    // Room scan — shown AFTER connection is established so the proctor can
-    // see the candidate is online before they turn the phone to scan the room.
-    const roomScanSection = document.getElementById('room-scan-section');
-    if (roomScanSection) {
+    // Room scan — driven by API response, not template context.
+    // The section is always in the DOM; we show it only when required.
+    if (examInfo.require_room_scan) {
       setStatus('📹 Please complete the room scan.', 'warning');
-      roomScanSection.style.display = '';
       await handleRoomScan();
       setStatus('🟢 Connected — streaming to proctor', 'success');
     }

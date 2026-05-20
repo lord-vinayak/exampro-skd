@@ -303,6 +303,11 @@ def upload_room_scan(token):
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "webm"
         key = f"{name}/room_scan.{ext}"
 
+        # Commit before the upload so we don't hold an open transaction while
+        # S3 upload runs (10-30s). Concurrent receive_frame writes to the same
+        # row would otherwise cause InnoDB error 1020 when we UPDATE afterward.
+        frappe.db.commit()
+
         s3_client.upload_fileobj(
             file,
             settings.s3_bucket,
@@ -310,7 +315,6 @@ def upload_room_scan(token):
             ExtraArgs={"ContentType": file.content_type or "video/webm"},
         )
 
-        # Use raw SQL to avoid optimistic-locking conflict with concurrent receive_frame calls
         frappe.db.sql(
             "UPDATE `tabExam Submission` SET `room_scan_key` = %s WHERE `name` = %s",
             (key, name),

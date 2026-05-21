@@ -22,6 +22,11 @@ var NO_FACE_GRACE_SECONDS = 60;
 var violationSnapshots = null;
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── AUDIO VAD MONITORING ─────────────────────────────────────────────────────
+// Initialised when audio monitoring is enabled on the exam.
+var audioVAD = null;
+// ─────────────────────────────────────────────────────────────────────────────
+
 function showNotification(message, type = 'info') {
     if (typeof toastr !== 'undefined') {
         switch (type) {
@@ -103,6 +108,28 @@ function showScreenShareOverlay() {
 
         const granted = await violationSnapshots.requestScreenCapture();
 
+        // Request microphone permission in the same user-gesture if audio monitoring is enabled
+        if (exam.enable_audio_monitoring && !audioVAD) {
+            try {
+                audioVAD = new AudioVADManager({
+                    examSubmission: exam['exam_submission'],
+                    rmsThreshold:   0.05,
+                    windowMs:       30000,
+                });
+                const micGranted = await audioVAD.requestMicPermission();
+                if (micGranted) {
+                    audioVAD.start();
+                    console.log('[Proctoring] Audio monitoring active.');
+                } else {
+                    console.warn('[Proctoring] Microphone permission denied — audio monitoring disabled.');
+                    audioVAD = null;
+                }
+            } catch (e) {
+                console.error('[Proctoring] Could not initialise AudioVADManager:', e);
+                audioVAD = null;
+            }
+        }
+
         if (granted) {
             overlay.remove();
             activateDetector(); // Start detecting tab changes ONLY after screen share is granted
@@ -115,6 +142,275 @@ function showScreenShareOverlay() {
             note.textContent = 'Screen sharing is required. Please click "Try Again" and select "Entire Screen".';
         }
     });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight overlay for exams that have audio monitoring but NOT video
+ * proctoring (so the screen-share overlay is never shown).
+ * The candidate must click a button — providing the user-gesture needed
+ * by getUserMedia — before the exam proceeds.
+ */
+function showAudioPermissionOverlay() {
+    if (document.getElementById('audioPermissionOverlay')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'audioPermissionOverlay';
+    overlay.style.cssText = `
+        position:fixed;inset:0;z-index:99999;
+        background:rgba(15,15,15,0.92);
+        display:flex;align-items:center;justify-content:center;
+        font-family:inherit;`;
+
+    overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:460px;
+                    width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
+            <div style="font-size:48px;margin-bottom:16px;">🎙️</div>
+            <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Microphone Monitoring Required</h3>
+            <p style="margin:0 0 24px;color:#555;line-height:1.6;">
+                This exam monitors the environment for noise. Please allow microphone access when prompted.
+            </p>
+            <button id="audioPermissionBtn"
+                style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
+                       padding:14px 32px;font-size:1rem;cursor:pointer;width:100%;
+                       font-weight:600;transition:background 0.2s;">
+                Enable Audio Monitoring
+            </button>
+            <p id="audioPermissionNote" style="margin:16px 0 0;font-size:0.8rem;color:#999;">
+                The exam requires microphone access to continue.
+            </p>
+        </div>`;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('audioPermissionBtn').addEventListener('click', async function () {
+        this.disabled = true;
+        this.textContent = 'Waiting for permission…';
+
+        try {
+            audioVAD = new AudioVADManager({
+                examSubmission: exam['exam_submission'],
+                rmsThreshold:   0.05,
+                windowMs:       30000,
+            });
+            const micGranted = await audioVAD.requestMicPermission();
+            if (micGranted) {
+                audioVAD.start();
+                console.log('[Proctoring] Audio monitoring active (overlay dismissed).');
+                overlay.remove();
+            } else {
+                audioVAD = null;
+                this.disabled = false;
+                this.textContent = 'Try Again';
+                const note = document.getElementById('audioPermissionNote');
+                note.style.color = '#d32f2f';
+                note.textContent = 'Microphone access is required. Please click "Try Again" and allow access.';
+            }
+        } catch (e) {
+            console.error('[AudioVAD] Permission overlay error:', e);
+            audioVAD = null;
+            this.disabled = false;
+            this.textContent = 'Try Again';
+        }
+    });
+}
+
+// ── AUDIO VAD MANAGER ────────────────────────────────────────────────────────
+/**
+ * AudioVADManager
+ *
+ * Continuously monitors the microphone using the Web Audio API.
+ * Audio is split into fixed 30-second windows. For each window:
+ *   - If the peak RMS amplitude exceeded the threshold → upload the 30s
+ *     audio clip to S3 via save_audio_clip and log a noise_detected violation.
+ *   - Otherwise → discard the clip silently.
+ *
+ * No visual indicator is shown to the candidate.
+ *
+ * USAGE:
+ *   1. Call requestMicPermission() inside a user-gesture handler.
+ *   2. Call start() to begin window-based monitoring.
+ *   3. Call stop() when the exam ends.
+ */
+class AudioVADManager {
+    /**
+     * @param {Object} options
+     * @param {string} options.examSubmission   Frappe Exam Submission doc name (required)
+     * @param {number} [options.rmsThreshold]   RMS amplitude threshold (0–1 scale). Default 0.05.
+     * @param {number} [options.windowMs]       Window length in milliseconds. Default 30000 (30s).
+     */
+    constructor(options = {}) {
+        if (!options.examSubmission) {
+            throw new Error('[AudioVAD] examSubmission is required.');
+        }
+        this.examSubmission  = options.examSubmission;
+        this.rmsThreshold    = options.rmsThreshold || 0.05;
+        this.windowMs        = options.windowMs     || 30000;
+
+        this._stream         = null;   // MediaStream from getUserMedia
+        this._audioCtx       = null;   // AudioContext
+        this._analyser       = null;   // AnalyserNode for RMS sampling
+        this._recorder       = null;   // MediaRecorder for current window
+        this._chunks         = [];     // audio chunks collected this window
+        this._windowIndex    = 0;      // sequential window counter
+        this._noiseInWindow  = false;  // was noise detected in current window?
+        this._running        = false;
+        this._windowTimer    = null;
+        this._rmsTimer       = null;
+    }
+
+    /** Request microphone permission. Must be called inside a user-gesture. */
+    async requestMicPermission() {
+        try {
+            this._stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            console.log('[AudioVAD] Microphone permission granted.');
+            return true;
+        } catch (err) {
+            console.warn('[AudioVAD] Microphone permission denied or unavailable:', err.message);
+            return false;
+        }
+    }
+
+    /** Returns true if mic permission has been granted. */
+    hasMicPermission() {
+        return this._stream !== null && this._stream.active;
+    }
+
+    /** Begin 30-second window monitoring. Call after requestMicPermission() succeeds. */
+    start() {
+        if (!this.hasMicPermission()) {
+            console.warn('[AudioVAD] Cannot start — mic permission not granted.');
+            return;
+        }
+        if (this._running) return;
+        this._running = true;
+
+        // Set up Web Audio AnalyserNode for RMS sampling
+        this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source   = this._audioCtx.createMediaStreamSource(this._stream);
+        this._analyser = this._audioCtx.createAnalyser();
+        this._analyser.fftSize = 256;
+        source.connect(this._analyser);
+
+        console.log('[AudioVAD] Monitoring started. Window: ' + (this.windowMs / 1000) + 's, threshold: ' + this.rmsThreshold);
+        this._startWindow();
+    }
+
+    /** Stop monitoring and release the microphone. */
+    stop() {
+        this._running = false;
+        clearTimeout(this._windowTimer);
+        clearInterval(this._rmsTimer);
+
+        if (this._recorder && this._recorder.state !== 'inactive') {
+            try { this._recorder.stop(); } catch (_) {}
+        }
+        if (this._audioCtx) {
+            try { this._audioCtx.close(); } catch (_) {}
+            this._audioCtx = null;
+        }
+        if (this._stream) {
+            this._stream.getTracks().forEach(t => t.stop());
+            this._stream = null;
+        }
+        console.log('[AudioVAD] Monitoring stopped.');
+    }
+
+    // -------------------------------------------------------------------------
+    // Private
+    // -------------------------------------------------------------------------
+
+    _startWindow() {
+        if (!this._running) return;
+
+        this._chunks        = [];
+        this._noiseInWindow = false;
+
+        // Start recording the window
+        try {
+            this._recorder = new MediaRecorder(this._stream, { mimeType: 'audio/webm' });
+        } catch (_) {
+            // Fallback: let browser pick codec
+            this._recorder = new MediaRecorder(this._stream);
+        }
+        this._recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) this._chunks.push(e.data);
+        };
+        this._recorder.start(1000); // collect chunks every 1s
+
+        // Poll RMS every 500ms during the window
+        const dataArr = new Float32Array(this._analyser.fftSize);
+        this._rmsTimer = setInterval(() => {
+            this._analyser.getFloatTimeDomainData(dataArr);
+            let sum = 0;
+            for (let i = 0; i < dataArr.length; i++) sum += dataArr[i] * dataArr[i];
+            const rms = Math.sqrt(sum / dataArr.length);
+            if (rms > this.rmsThreshold) {
+                this._noiseInWindow = true;
+            }
+        }, 500);
+
+        // At the end of the window: evaluate and upload if noisy
+        this._windowTimer = setTimeout(() => {
+            this._endWindow();
+        }, this.windowMs);
+    }
+
+    _endWindow() {
+        clearInterval(this._rmsTimer);
+
+        const windowIdx    = this._windowIndex;
+        const wasNoisy     = this._noiseInWindow;
+        this._windowIndex += 1;
+
+        if (this._recorder && this._recorder.state !== 'inactive') {
+            this._recorder.onstop = () => {
+                if (wasNoisy) {
+                    const blob = new Blob(this._chunks, { type: 'audio/webm' });
+                    this._uploadClip(blob, windowIdx);
+                } else {
+                    console.log(`[AudioVAD] Window ${windowIdx}: quiet — discarded.`);
+                }
+                this._chunks = [];
+                // Start the next window
+                if (this._running) this._startWindow();
+            };
+            this._recorder.stop();
+        } else {
+            if (this._running) this._startWindow();
+        }
+    }
+
+    _uploadClip(blob, windowIdx) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64data = reader.result; // includes data-URI prefix
+            const windowNum  = windowIdx + 1;
+            const desc       = `Noise detected in 30-second window #${windowNum} (threshold: ${this.rmsThreshold})`;
+
+            frappe.call({
+                method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.save_audio_clip',
+                type:   'POST',
+                args: {
+                    exam_submission: this.examSubmission,
+                    audio_data:      base64data,
+                    window_index:    windowIdx,
+                    description:     desc,
+                },
+                callback: (r) => {
+                    if (r && r.message && r.message.status === 'success') {
+                        console.log(`[AudioVAD] Window ${windowIdx}: noisy — clip uploaded successfully.`);
+                    } else {
+                        console.warn(`[AudioVAD] Window ${windowIdx}: upload returned unexpected response.`, r);
+                    }
+                },
+                error: (err) => {
+                    console.error(`[AudioVAD] Window ${windowIdx}: upload failed.`, err);
+                },
+            });
+        };
+        reader.readAsDataURL(blob);
+    }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -480,6 +776,12 @@ frappe.ready(() => {
         // If ON, it will be activated after screen share is granted in showScreenShareOverlay.
         if (!exam.enable_video_proctoring) {
             activateDetector();
+
+            // If audio monitoring is enabled but there's no screen-share overlay
+            // (video proctoring is off), request mic via a lightweight overlay.
+            if (exam.enable_audio_monitoring && !audioVAD) {
+                showAudioPermissionOverlay();
+            }
         }
     }
 
@@ -816,8 +1118,9 @@ function terminateForNoFace() {
     const timeout = new Promise((resolve) => setTimeout(resolve, 5000));
     Promise.race([Promise.all([snapshotPromise, terminatePromise]), timeout]).finally(() => {
         stopRecording();
-        if (detector)          detector.destroy();
+        if (detector)           detector.destroy();
         if (violationSnapshots) violationSnapshots.destroy();
+        if (audioVAD)           audioVAD.stop();
         window.location.href = "/exam/" + exam.exam_submission;
     });
 }

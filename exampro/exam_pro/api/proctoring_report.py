@@ -26,6 +26,7 @@ WARNING_TYPE_LABELS = {
     "mobile_second_person": "Mobile: Second Person",
     "mobile_phone_detected": "Mobile: Phone Detected",
     "mobile_notes_detected": "Mobile: Notes Detected",
+    "noise_detected": "Noise Detected",
     "other": "Other Violation",
 }
 
@@ -215,7 +216,13 @@ def get_report_context(doc):
         "exam_total_marks": exam.total_marks,
         "result_status": doc.result_status,
         "pass_percentage": exam.pass_percentage,
-        "attention_score": doc.attention_score or 0,
+        "attention_score": doc.attention_score or 0,   # stored as trust score now
+        "trust_score": doc.attention_score or 0,
+        "trust_score_verdict": (
+            "PASS" if (doc.attention_score or 0) >= 70
+            else "REVIEW" if (doc.attention_score or 0) >= 40
+            else "FAIL"
+        ),
         "warning_count": doc.warning_count or 0,
         "face_count_changes": doc.face_count_changes or 0,
         "total_away_time_seconds": round(doc.total_away_time or 0, 1),

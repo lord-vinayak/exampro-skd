@@ -120,6 +120,11 @@ frappe.ui.form.on("Exam Submission", {
             renderMobileSnapshots(frm);
         }
 
+        // Audio recordings section (noise monitoring)
+        if (["Submitted", "Terminated"].includes(frm.doc.status)) {
+            renderAudioRecordings(frm);
+        }
+
         // Proctoring Report Download Button
         if (["Submitted", "Terminated"].includes(frm.doc.status)) {
             frm.add_custom_button(__('Download Proctoring Report'), function() {
@@ -183,6 +188,67 @@ async function renderMobileSnapshots(frm) {
         frm.page.main.find('#mobile-snapshots-section').remove();
         frm.page.main.append(`<div id="mobile-snapshots-section">${html}</div>`);
     }
+}
+
+async function renderAudioRecordings(frm) {
+    const result = await frappe.call({
+        method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.get_audio_recordings',
+        args: { exam_submission: frm.doc.name },
+    });
+
+    const recordings = result.message || [];
+
+    // Remove any previously rendered section (on form reload)
+    frm.page.main.find('#audio-recordings-section').remove();
+
+    if (!recordings.length) return;
+
+    const rows = recordings.map((rec, idx) => {
+        const ts = rec.timestamp
+            ? frappe.datetime.str_to_user(rec.timestamp)
+            : `Recording ${idx + 1}`;
+        const audioEl = rec.audio_url
+            ? `<audio controls style="width:100%;max-width:400px;">
+                   <source src="${rec.audio_url}" type="audio/webm">
+                   Your browser does not support audio playback.
+               </audio>`
+            : `<span style="color:#999;font-size:0.8rem;">Audio unavailable</span>`;
+
+        return `
+            <tr>
+                <td style="width:180px;white-space:nowrap;padding:6px 8px;color:#555;font-size:0.85rem;">
+                    ${ts}
+                </td>
+                <td style="padding:6px 8px;font-size:0.85rem;color:#666;">
+                    ${rec.message || 'Noise detected'}
+                </td>
+                <td style="padding:6px 8px;">
+                    ${audioEl}
+                </td>
+            </tr>`;
+    }).join('');
+
+    const html = `
+        <div id="audio-recordings-section" style="margin:1.5rem 0;padding:1rem;border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;">
+            <h6 style="margin-bottom:0.75rem;font-weight:600;">🎙️ Audio Monitoring — Noise Detected (${recordings.length} window${recordings.length !== 1 ? 's' : ''})</h6>
+            <p style="font-size:0.8rem;color:#888;margin-bottom:0.75rem;">
+                Each row is a 30-second window where ambient noise exceeded the monitoring threshold.
+            </p>
+            <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:4px;overflow:hidden;border:1px solid #eee;">
+                <thead>
+                    <tr style="background:#f5f5f5;">
+                        <th style="padding:6px 8px;text-align:left;font-size:0.82rem;font-weight:600;color:#444;">Timestamp</th>
+                        <th style="padding:6px 8px;text-align:left;font-size:0.82rem;font-weight:600;color:#444;">Description</th>
+                        <th style="padding:6px 8px;text-align:left;font-size:0.82rem;font-weight:600;color:#444;">Recording</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        </div>`;
+
+    frm.page.main.append(html);
 }
 
 function drawRetinaPlot(retinaData) {

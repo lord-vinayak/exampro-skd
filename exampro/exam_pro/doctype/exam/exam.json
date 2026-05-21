@@ -19,6 +19,7 @@
   "enable_mobile_proctoring",
   "mobile_grace_period",
   "require_room_scan",
+  "enable_audio_monitoring",
   "enable_calculator",
   "enable_chat",
   "max_warning_count",
@@ -263,6 +264,13 @@
    "fieldname": "require_room_scan",
    "fieldtype": "Check",
    "label": "Require Room Scan Video"
+  },
+  {
+   "default": "0",
+   "description": "Continuously monitor microphone audio and flag 30-second windows where noise exceeds the threshold",
+   "fieldname": "enable_audio_monitoring",
+   "fieldtype": "Check",
+   "label": "Enable Audio Monitoring"
   },
   {
    "default": "3",

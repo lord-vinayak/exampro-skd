@@ -14,7 +14,8 @@
   "timestamp",
   "webcam_snapshot_key",
   "screen_snapshot_key",
-  "mobile_snapshot_key"
+  "mobile_snapshot_key",
+  "audio_clip_key"
  ],
  "fields": [
   {
@@ -58,7 +59,7 @@
    "fieldname": "warning_type",
    "fieldtype": "Select",
    "label": "Warning Type",
-   "options": "tabchange\nmonitorchange\nnowebcam\nnoface\nmultiplefaces\ngazeaway\nnofacetimeout\nappswitch\nmobile_noface\nmobile_multiplefaces\nmobile_disconnect\nmobile_device_detected\nmobile_second_person\nmobile_phone_detected\nmobile_notes_detected\nother"
+   "options": "tabchange\nmonitorchange\nnowebcam\nnoface\nmultiplefaces\ngazeaway\nnofacetimeout\nappswitch\nmobile_noface\nmobile_multiplefaces\nmobile_disconnect\nmobile_device_detected\nmobile_second_person\nmobile_phone_detected\nmobile_notes_detected\nnoise_detected\nother"
   },
   {
    "fieldname": "timestamp",
@@ -81,6 +82,11 @@
    "fieldname": "mobile_snapshot_key",
    "fieldtype": "Small Text",
    "label": "Mobile Snapshot S3 Key"
+  },
+  {
+   "fieldname": "audio_clip_key",
+   "fieldtype": "Small Text",
+   "label": "Audio Clip S3 Key"
   }
  ],
  "index_web_pages_for_search": 1,

@@ -60,7 +60,8 @@
       "Bash(cat deploy.sh)",
       "Bash(bench --site exampro.localhost clear-cache)",
       "Bash(wsl -e bash -c \"cd ~/frappe-dev/exampro-bench && bench --site exampro.localhost clear-cache 2>&1 | tail -5\")",
-      "Bash(git -C \"\\\\\\\\\\\\\\\\wsl.localhost\\\\\\\\ubuntu\\\\\\\\home\\\\\\\\vinayak\\\\\\\\frappe-dev\\\\\\\\exampro-bench\\\\\\\\apps\\\\\\\\exampro\" diff exam_pro/api/mobile_analysis.py)"
+      "Bash(git -C \"\\\\\\\\\\\\\\\\wsl.localhost\\\\\\\\ubuntu\\\\\\\\home\\\\\\\\vinayak\\\\\\\\frappe-dev\\\\\\\\exampro-bench\\\\\\\\apps\\\\\\\\exampro\" diff exam_pro/api/mobile_analysis.py)",
+      "Bash(wsl.exe sed *)"
     ]
   }
 }

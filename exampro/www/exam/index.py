@@ -61,6 +61,7 @@ def get_live_exam(member=None):
 			"enable_video_proctoring": exam.enable_video_proctoring,
 			"enable_mobile_proctoring": exam.enable_mobile_proctoring,
 			"mobile_grace_period": exam.mobile_grace_period or 60,
+				"enable_audio_monitoring": getattr(exam, "enable_audio_monitoring", 0),
 			"enable_chat": exam.enable_chat,
 			"schedule_status": schedule.get_status(),
 			"schedule_type": schedule.schedule_type,

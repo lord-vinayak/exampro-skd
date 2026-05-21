@@ -3,6 +3,7 @@
 
 import random
 import base64
+import io
 import os
 import requests
 import uuid
@@ -1352,5 +1353,119 @@ def get_mobile_violation_snapshots(exam_submission):
 				)
 			except Exception:
 				msg["snapshot_url"] = None
+
+	return messages
+
+
+# ---------------------------------------------------------------------------
+# Audio monitoring APIs
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def save_audio_clip(exam_submission, audio_data, window_index=0, description=""):
+	"""
+	Called by the exam browser every 30 seconds when noise is detected in that window.
+
+	Stores the raw WebM audio blob (base64-encoded) to S3 and creates an
+	Exam Messages violation record (warning_type='noise_detected').
+
+	Args:
+		exam_submission: Exam Submission document name
+		audio_data:      base64-encoded WebM audio blob (may include data-URI prefix)
+		window_index:    sequential window number (0-based) from exam start
+		description:     optional human-readable detail (e.g. peak RMS value)
+	"""
+	candidate = frappe.db.get_value("Exam Submission", exam_submission, "candidate")
+	if not candidate:
+		frappe.throw(_("Exam submission not found."))
+
+	if frappe.session.user != candidate:
+		frappe.throw(_("Permission denied."), frappe.PermissionError)
+
+	status = frappe.db.get_value("Exam Submission", exam_submission, "status")
+	if status not in ("Started",):
+		return {"status": "skipped", "reason": f"Exam status is '{status}', not 'Started'."}
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	# Strip data-URI prefix if present (e.g. "data:audio/webm;base64,")
+	if "," in audio_data:
+		audio_data = audio_data.split(",", 1)[1]
+
+	try:
+		audio_bytes = base64.b64decode(audio_data)
+	except Exception as e:
+		frappe.log_error(f"Audio clip base64 decode failed: {e}", "Audio Monitoring")
+		return {"status": "error", "reason": "Invalid audio data."}
+
+	ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+	audio_key = f"{exam_submission}/audio/window_{int(window_index):05d}_{ts}.webm"
+
+	try:
+		s3_client.upload_fileobj(
+			io.BytesIO(audio_bytes),
+			settings.s3_bucket,
+			audio_key,
+			ExtraArgs={"ContentType": "audio/webm"},
+		)
+	except Exception as e:
+		frappe.log_error(
+			f"Audio clip upload failed — submission={exam_submission}: {e}",
+			"Audio Monitoring: Upload",
+		)
+		return {"status": "error", "reason": "Upload failed."}
+
+	msg_text = description or f"Noise detected in 30-second window #{int(window_index) + 1}"
+
+	frappe.get_doc({
+		"doctype": "Exam Messages",
+		"exam_submission": exam_submission,
+		"timestamp": frappe.utils.now(),
+		"from": "System",
+		"from_user": candidate,
+		"message": msg_text,
+		"type_of_message": "Warning",
+		"warning_type": "noise_detected",
+		"audio_clip_key": audio_key,
+	}).insert(ignore_permissions=True)
+
+	frappe.db.commit()
+	return {"status": "success", "audio_key": audio_key}
+
+
+@frappe.whitelist()
+def get_audio_recordings(exam_submission):
+	"""
+	Return all noise-detected violation records with presigned S3 audio URLs.
+	Called by the Exam Submission form client script to render the audio section.
+	"""
+	messages = frappe.get_all(
+		"Exam Messages",
+		filters={
+			"exam_submission": exam_submission,
+			"warning_type": "noise_detected",
+		},
+		fields=["name", "timestamp", "message", "audio_clip_key"],
+		order_by="timestamp asc",
+	)
+
+	if not messages:
+		return []
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	for msg in messages:
+		msg["audio_url"] = None
+		if msg.get("audio_clip_key"):
+			try:
+				msg["audio_url"] = s3_client.generate_presigned_url(
+					"get_object",
+					Params={"Bucket": settings.s3_bucket, "Key": msg.audio_clip_key},
+					ExpiresIn=3600,
+				)
+			except Exception:
+				pass
 
 	return messages

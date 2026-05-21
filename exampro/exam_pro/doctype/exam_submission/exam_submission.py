@@ -734,7 +734,10 @@ def exam_messages(exam_submission=None):
 
 	res = frappe.get_all(
 		"Exam Messages", filters={
-		"exam_submission": exam_submission
+			"exam_submission": exam_submission,
+			# Exclude audio noise violations from the candidate chat — they are
+			# only visible to the proctor via the exam submission page and report.
+			"warning_type": ["not in", ["noise_detected"]],
 		}, fields=["creation", "from", "message", "type_of_message"],
 		ignore_permissions=True
 	)

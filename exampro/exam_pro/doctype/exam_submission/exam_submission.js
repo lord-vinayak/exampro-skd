@@ -208,7 +208,7 @@ async function renderAudioRecordings(frm) {
             ? frappe.datetime.str_to_user(rec.timestamp)
             : `Recording ${idx + 1}`;
         const audioEl = rec.audio_url
-            ? `<audio controls style="width:100%;max-width:400px;">
+            ? `<audio controls preload="auto" style="width:100%;max-width:400px;">
                    <source src="${rec.audio_url}" type="audio/webm">
                    Your browser does not support audio playback.
                </audio>`

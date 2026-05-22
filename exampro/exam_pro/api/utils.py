@@ -366,70 +366,87 @@ def can_show_exam_results_for_leaderboard(exam_doc, submission_doc):
 
 def calculate_attention_score(exam_submission):
     """
-    Calculate attention score for exam proctoring
-    
-    Args:
-        exam_submission (str): Name of the exam submission document
-        face_changes (int): Number of face count changes detected
-        total_away_time (int): Total seconds with no face detected
-        total_distracted_time (int): Total seconds looking away/distracted
-        config (dict, optional): Configuration overrides
-    
-    Returns:
-        dict: Score and breakdown
+    Kept for backwards compatibility — delegates to calculate_trust_score.
     """
-    
-    # Default configuration
-    default_config = {
-        'away_weight': 0.45,
-        'changes_weight': 0.30,
-        'distracted_weight': 0.25,
-        'max_away_percent': 5.0,
-        'max_changes_per_hour': 3.0,
-        'max_distracted_percent': 20.0
-    }
-    
-    # Merge with user config
-    cfg = default_config.copy()
-    # if config:
-    #     cfg.update(config)
+    return calculate_trust_score(exam_submission)
 
-    exam_started_time, total_away_time, total_distracted_time, face_changes = \
-        frappe.db.get_value("Exam Submission", exam_submission, "exam_started_time, total_away_time, total_distracted_time, face_count_changes")
-    # Calculate exam duration in seconds
-    if not exam_started_time:
-        frappe.throw(f"Exam Submission {exam_submission} does not have a start time.")
-    duration_seconds = (datetime.now() - exam_started_time).total_seconds()
-    duration_hours = duration_seconds / 3600
-    
-    # Calculate percentages and rates
-    away_percent = (total_away_time / duration_seconds) * 100
-    distracted_percent = (total_distracted_time / duration_seconds) * 100
-    changes_per_hour = face_changes / duration_hours if duration_hours > 0 else 0
-    
-    # Calculate component scores (0-100)
-    away_score = max(0, 100 - max(0, away_percent - cfg['max_away_percent']) * 5)
-    changes_score = max(0, 100 - max(0, changes_per_hour - cfg['max_changes_per_hour']) * 15)
-    distracted_score = max(0, 100 - max(0, distracted_percent - cfg['max_distracted_percent']) * 2)
-    
-    # Calculate weighted final score
-    final_score = (
-        away_score * cfg['away_weight'] +
-        changes_score * cfg['changes_weight'] +
-        distracted_score * cfg['distracted_weight']
+
+def calculate_trust_score(exam_submission):
+    """
+    Calculate the Exam Integrity / Trust Score using the weighted penalty model.
+
+    Formula:  E = max(0, 100 − Σ(xₖ × wₖ))
+
+    Violation weights (per the Integrity Score Formula spec):
+        tabchange                                     →  5 pts each
+        noise_detected                                →  3 pts each
+        noface / nofacetimeout                        → 10 pts each
+        mobile_phone_detected / mobile_notes_detected
+            / mobile_device_detected                  →  8 pts each
+        multiplefaces / mobile_multiplefaces
+            / mobile_second_person                    → 15 pts each
+
+    Score bands:
+        70 – 100  PASS    (no action needed)
+        40 –  69  REVIEW  (flag for manual review)
+         0 –  39  FAIL    (severe — exam may be invalidated)
+
+    The computed score is stored in the `attention_score` field
+    (repurposed as "Trust Score") on the Exam Submission document.
+
+    Returns:
+        dict with 'score', 'verdict', and per-category counts.
+    """
+    WEIGHTS = {
+        "tabchange":              5,
+        "noise_detected":         3,
+        "noface":                10,
+        "nofacetimeout":         10,
+        "mobile_phone_detected":  8,
+        "mobile_notes_detected":  8,
+        "mobile_device_detected": 8,
+        "multiplefaces":         15,
+        "mobile_multiplefaces":  15,
+        "mobile_second_person":  15,
+    }
+
+    # Fetch all Warning-type messages for this submission
+    messages = frappe.get_all(
+        "Exam Messages",
+        filters={"exam_submission": exam_submission, "type_of_message": "Warning"},
+        fields=["warning_type"],
     )
-    
-    # Round to 1 decimal place
-    final_score = round(final_score, 1)
+
+    # Count occurrences per violation type
+    counts = {}
+    for msg in messages:
+        wt = msg.get("warning_type") or "other"
+        counts[wt] = counts.get(wt, 0) + 1
+
+    # Compute penalty
+    total_penalty = sum(
+        counts.get(vtype, 0) * weight
+        for vtype, weight in WEIGHTS.items()
+    )
+    score = max(0, 100 - total_penalty)
+
+    # Verdict band
+    if score >= 70:
+        verdict = "PASS"
+    elif score >= 40:
+        verdict = "REVIEW"
+    else:
+        verdict = "FAIL"
+
+    # Persist into attention_score field (repurposed as Trust Score)
     frappe.db.set_value("Exam Submission", exam_submission, {
-        "attention_score": final_score
+        "attention_score": score
     })
     frappe.db.commit()
-    
+
     return {
-        'score': final_score,
-        'away_percent': round(away_percent, 1),
-        'distracted_percent': round(distracted_percent, 1),
-        'changes_per_hour': round(changes_per_hour, 1),
-        'duration_minutes': round(duration_seconds / 60, 1)
+        "score": score,
+        "verdict": verdict,
+        "violation_counts": counts,
+        "total_penalty": total_penalty,
     }

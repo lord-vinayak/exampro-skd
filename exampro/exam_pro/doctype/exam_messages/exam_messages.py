@@ -35,11 +35,23 @@ class ExamMessages(Document):
 		# 		user=proctor
 		# 	)
 		if self.type_of_message == "Warning":
-			wc = frappe.db.get_value("Exam Submission", self.exam_submission, "warning_count") or 0
-			new_wc = wc + 1
-			frappe.db.set_value(
-				"Exam Submission", self.exam_submission, "warning_count", new_wc
+			# Skip warning count and termination logic for post-exam analysis violations.
+			# Exams that are already Submitted or Terminated cannot be terminated again,
+			# and the batch mobile analysis inserts many violation records at once which
+			# would otherwise race-condition the warning_count and trigger false terminations.
+			sub_status = frappe.db.get_value(
+				"Exam Submission", self.exam_submission, "status"
 			)
+			if sub_status in ("Submitted", "Terminated"):
+				return
+
+			# Atomic increment — avoids InnoDB 1020 from concurrent receive_frame writes
+			frappe.db.sql(
+				"UPDATE `tabExam Submission` SET `warning_count` = COALESCE(`warning_count`, 0) + 1"
+				" WHERE `name` = %s",
+				(self.exam_submission,),
+			)
+			new_wc = frappe.db.get_value("Exam Submission", self.exam_submission, "warning_count") or 0
 
 			exam = frappe.get_cached_value("Exam Submission", self.exam_submission, "exam")
 			max_warning = frappe.get_cached_value("Exam", exam, "max_warning_count")

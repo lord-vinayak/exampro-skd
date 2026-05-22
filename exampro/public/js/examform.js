@@ -22,6 +22,11 @@ var NO_FACE_GRACE_SECONDS = 60;
 var violationSnapshots = null;
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── AUDIO VAD MONITORING ─────────────────────────────────────────────────────
+// Initialised when audio monitoring is enabled on the exam.
+var audioVAD = null;
+// ─────────────────────────────────────────────────────────────────────────────
+
 function showNotification(message, type = 'info') {
     if (typeof toastr !== 'undefined') {
         switch (type) {
@@ -103,6 +108,28 @@ function showScreenShareOverlay() {
 
         const granted = await violationSnapshots.requestScreenCapture();
 
+        // Request microphone permission in the same user-gesture if audio monitoring is enabled
+        if (exam.enable_audio_monitoring && !audioVAD) {
+            try {
+                audioVAD = new AudioVADManager({
+                    examSubmission: exam['exam_submission'],
+                    rmsThreshold:   0.05,
+                    windowMs:       30000,
+                });
+                const micGranted = await audioVAD.requestMicPermission();
+                if (micGranted) {
+                    audioVAD.start();
+                    console.log('[Proctoring] Audio monitoring active.');
+                } else {
+                    console.warn('[Proctoring] Microphone permission denied — audio monitoring disabled.');
+                    audioVAD = null;
+                }
+            } catch (e) {
+                console.error('[Proctoring] Could not initialise AudioVADManager:', e);
+                audioVAD = null;
+            }
+        }
+
         if (granted) {
             overlay.remove();
             activateDetector(); // Start detecting tab changes ONLY after screen share is granted
@@ -115,6 +142,275 @@ function showScreenShareOverlay() {
             note.textContent = 'Screen sharing is required. Please click "Try Again" and select "Entire Screen".';
         }
     });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight overlay for exams that have audio monitoring but NOT video
+ * proctoring (so the screen-share overlay is never shown).
+ * The candidate must click a button — providing the user-gesture needed
+ * by getUserMedia — before the exam proceeds.
+ */
+function showAudioPermissionOverlay() {
+    if (document.getElementById('audioPermissionOverlay')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'audioPermissionOverlay';
+    overlay.style.cssText = `
+        position:fixed;inset:0;z-index:99999;
+        background:rgba(15,15,15,0.92);
+        display:flex;align-items:center;justify-content:center;
+        font-family:inherit;`;
+
+    overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:460px;
+                    width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
+            <div style="font-size:48px;margin-bottom:16px;">🎙️</div>
+            <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Microphone Monitoring Required</h3>
+            <p style="margin:0 0 24px;color:#555;line-height:1.6;">
+                This exam monitors the environment for noise. Please allow microphone access when prompted.
+            </p>
+            <button id="audioPermissionBtn"
+                style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
+                       padding:14px 32px;font-size:1rem;cursor:pointer;width:100%;
+                       font-weight:600;transition:background 0.2s;">
+                Enable Audio Monitoring
+            </button>
+            <p id="audioPermissionNote" style="margin:16px 0 0;font-size:0.8rem;color:#999;">
+                The exam requires microphone access to continue.
+            </p>
+        </div>`;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('audioPermissionBtn').addEventListener('click', async function () {
+        this.disabled = true;
+        this.textContent = 'Waiting for permission…';
+
+        try {
+            audioVAD = new AudioVADManager({
+                examSubmission: exam['exam_submission'],
+                rmsThreshold:   0.05,
+                windowMs:       30000,
+            });
+            const micGranted = await audioVAD.requestMicPermission();
+            if (micGranted) {
+                audioVAD.start();
+                console.log('[Proctoring] Audio monitoring active (overlay dismissed).');
+                overlay.remove();
+            } else {
+                audioVAD = null;
+                this.disabled = false;
+                this.textContent = 'Try Again';
+                const note = document.getElementById('audioPermissionNote');
+                note.style.color = '#d32f2f';
+                note.textContent = 'Microphone access is required. Please click "Try Again" and allow access.';
+            }
+        } catch (e) {
+            console.error('[AudioVAD] Permission overlay error:', e);
+            audioVAD = null;
+            this.disabled = false;
+            this.textContent = 'Try Again';
+        }
+    });
+}
+
+// ── AUDIO VAD MANAGER ────────────────────────────────────────────────────────
+/**
+ * AudioVADManager
+ *
+ * Continuously monitors the microphone using the Web Audio API.
+ * Audio is split into fixed 30-second windows. For each window:
+ *   - If the peak RMS amplitude exceeded the threshold → upload the 30s
+ *     audio clip to S3 via save_audio_clip and log a noise_detected violation.
+ *   - Otherwise → discard the clip silently.
+ *
+ * No visual indicator is shown to the candidate.
+ *
+ * USAGE:
+ *   1. Call requestMicPermission() inside a user-gesture handler.
+ *   2. Call start() to begin window-based monitoring.
+ *   3. Call stop() when the exam ends.
+ */
+class AudioVADManager {
+    /**
+     * @param {Object} options
+     * @param {string} options.examSubmission   Frappe Exam Submission doc name (required)
+     * @param {number} [options.rmsThreshold]   RMS amplitude threshold (0–1 scale). Default 0.05.
+     * @param {number} [options.windowMs]       Window length in milliseconds. Default 30000 (30s).
+     */
+    constructor(options = {}) {
+        if (!options.examSubmission) {
+            throw new Error('[AudioVAD] examSubmission is required.');
+        }
+        this.examSubmission  = options.examSubmission;
+        this.rmsThreshold    = options.rmsThreshold || 0.05;
+        this.windowMs        = options.windowMs     || 30000;
+
+        this._stream         = null;   // MediaStream from getUserMedia
+        this._audioCtx       = null;   // AudioContext
+        this._analyser       = null;   // AnalyserNode for RMS sampling
+        this._recorder       = null;   // MediaRecorder for current window
+        this._chunks         = [];     // audio chunks collected this window
+        this._windowIndex    = 0;      // sequential window counter
+        this._noiseInWindow  = false;  // was noise detected in current window?
+        this._running        = false;
+        this._windowTimer    = null;
+        this._rmsTimer       = null;
+    }
+
+    /** Request microphone permission. Must be called inside a user-gesture. */
+    async requestMicPermission() {
+        try {
+            this._stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            console.log('[AudioVAD] Microphone permission granted.');
+            return true;
+        } catch (err) {
+            console.warn('[AudioVAD] Microphone permission denied or unavailable:', err.message);
+            return false;
+        }
+    }
+
+    /** Returns true if mic permission has been granted. */
+    hasMicPermission() {
+        return this._stream !== null && this._stream.active;
+    }
+
+    /** Begin 30-second window monitoring. Call after requestMicPermission() succeeds. */
+    start() {
+        if (!this.hasMicPermission()) {
+            console.warn('[AudioVAD] Cannot start — mic permission not granted.');
+            return;
+        }
+        if (this._running) return;
+        this._running = true;
+
+        // Set up Web Audio AnalyserNode for RMS sampling
+        this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source   = this._audioCtx.createMediaStreamSource(this._stream);
+        this._analyser = this._audioCtx.createAnalyser();
+        this._analyser.fftSize = 256;
+        source.connect(this._analyser);
+
+        console.log('[AudioVAD] Monitoring started. Window: ' + (this.windowMs / 1000) + 's, threshold: ' + this.rmsThreshold);
+        this._startWindow();
+    }
+
+    /** Stop monitoring and release the microphone. */
+    stop() {
+        this._running = false;
+        clearTimeout(this._windowTimer);
+        clearInterval(this._rmsTimer);
+
+        if (this._recorder && this._recorder.state !== 'inactive') {
+            try { this._recorder.stop(); } catch (_) {}
+        }
+        if (this._audioCtx) {
+            try { this._audioCtx.close(); } catch (_) {}
+            this._audioCtx = null;
+        }
+        if (this._stream) {
+            this._stream.getTracks().forEach(t => t.stop());
+            this._stream = null;
+        }
+        console.log('[AudioVAD] Monitoring stopped.');
+    }
+
+    // -------------------------------------------------------------------------
+    // Private
+    // -------------------------------------------------------------------------
+
+    _startWindow() {
+        if (!this._running) return;
+
+        this._chunks        = [];
+        this._noiseInWindow = false;
+
+        // Start recording the window
+        try {
+            this._recorder = new MediaRecorder(this._stream, { mimeType: 'audio/webm' });
+        } catch (_) {
+            // Fallback: let browser pick codec
+            this._recorder = new MediaRecorder(this._stream);
+        }
+        this._recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) this._chunks.push(e.data);
+        };
+        this._recorder.start(1000); // collect chunks every 1s
+
+        // Poll RMS every 500ms during the window
+        const dataArr = new Float32Array(this._analyser.fftSize);
+        this._rmsTimer = setInterval(() => {
+            this._analyser.getFloatTimeDomainData(dataArr);
+            let sum = 0;
+            for (let i = 0; i < dataArr.length; i++) sum += dataArr[i] * dataArr[i];
+            const rms = Math.sqrt(sum / dataArr.length);
+            if (rms > this.rmsThreshold) {
+                this._noiseInWindow = true;
+            }
+        }, 500);
+
+        // At the end of the window: evaluate and upload if noisy
+        this._windowTimer = setTimeout(() => {
+            this._endWindow();
+        }, this.windowMs);
+    }
+
+    _endWindow() {
+        clearInterval(this._rmsTimer);
+
+        const windowIdx    = this._windowIndex;
+        const wasNoisy     = this._noiseInWindow;
+        this._windowIndex += 1;
+
+        if (this._recorder && this._recorder.state !== 'inactive') {
+            this._recorder.onstop = () => {
+                if (wasNoisy) {
+                    const blob = new Blob(this._chunks, { type: 'audio/webm' });
+                    this._uploadClip(blob, windowIdx);
+                } else {
+                    console.log(`[AudioVAD] Window ${windowIdx}: quiet — discarded.`);
+                }
+                this._chunks = [];
+                // Start the next window
+                if (this._running) this._startWindow();
+            };
+            this._recorder.stop();
+        } else {
+            if (this._running) this._startWindow();
+        }
+    }
+
+    _uploadClip(blob, windowIdx) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64data = reader.result; // includes data-URI prefix
+            const windowNum  = windowIdx + 1;
+            const desc       = `Noise detected in 30-second window #${windowNum} (threshold: ${this.rmsThreshold})`;
+
+            frappe.call({
+                method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.save_audio_clip',
+                type:   'POST',
+                args: {
+                    exam_submission: this.examSubmission,
+                    audio_data:      base64data,
+                    window_index:    windowIdx,
+                    description:     desc,
+                },
+                callback: (r) => {
+                    if (r && r.message && r.message.status === 'success') {
+                        console.log(`[AudioVAD] Window ${windowIdx}: noisy — clip uploaded successfully.`);
+                    } else {
+                        console.warn(`[AudioVAD] Window ${windowIdx}: upload returned unexpected response.`, r);
+                    }
+                },
+                error: (err) => {
+                    console.error(`[AudioVAD] Window ${windowIdx}: upload failed.`, err);
+                },
+            });
+        };
+        reader.readAsDataURL(blob);
+    }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -285,18 +581,6 @@ function startRecording() {
                             }
                         },
 
-                        onGazeChange: (gazeState, gazeData) => {
-                            if (gazeState === 'away' &&
-                                exam.submission_status === 'Started' &&
-                                !examEnded &&
-                                violationSnapshots) {
-                                violationSnapshots.capture(
-                                    'gazeaway',
-                                    'Candidate gaze directed away from the screen.'
-                                );
-                            }
-                        },
-
                         onPostTrackingData: (trackingData) => {
                             if (exam.submission_status !== "Started") return;
                             frappe.call({
@@ -384,13 +668,29 @@ function activateDetector() {
             warningThreshold: 1,
 
             // Fires the instant the page is hidden / window loses focus.
-            // The webcam still has the last live frame at this moment.
+            // Webcam is grabbed synchronously right now. Screen capture is
+            // delayed 200ms so the screen stream updates to show the switched-to
+            // app/tab rather than the exam page (which is still rendering).
             onInactivityStart: () => {
-                if (violationSnapshots && exam.submission_status === 'Started' && !examEnded) {
+                if (exam.submission_status !== 'Started' || examEnded) return;
+                if (violationSnapshots) {
                     violationSnapshots.capture(
                         'tabchange',
-                        'Candidate switched away from the exam tab or window.'
+                        'Candidate switched away from the exam tab or window.',
+                        { screenDelay: 200 }
                     );
+                } else {
+                    // No snapshot manager (video proctoring off or screen share not yet
+                    // granted) — still record the violation as a warning message.
+                    frappe.call({
+                        method: 'exampro.exam_pro.doctype.exam_submission.exam_submission.post_exam_message',
+                        args: {
+                            exam_submission: exam.exam_submission,
+                            message: 'Candidate switched away from the exam tab or window.',
+                            type_of_message: 'Warning',
+                            warning_type: 'tabchange',
+                        },
+                    });
                 }
             },
 
@@ -398,8 +698,8 @@ function activateDetector() {
                 tabChangeStr = `Tab changed detected for ${secondsInactive} seconds.`;
                 console.log(tabChangeStr);
 
-                // Secondary capture on return — queued separately so both
-                // the departure and return moments are recorded.
+                // Secondary capture on return — records the moment of return.
+                // No screenDelay needed here: candidate is back on the exam tab.
                 if (violationSnapshots && exam.submission_status === 'Started' && !examEnded) {
                     violationSnapshots.capture(
                         'tabchange',
@@ -463,6 +763,7 @@ frappe.ready(() => {
     }
 
     if (exam.submission_status === "Started") {
+        window.examStarted = true;
         window.addEventListener('beforeunload', function (e) {
             // Log it if needed, but snapshots aren't possible here.
             // sendMessage("Window closed", "Warning", "tabchange");
@@ -470,12 +771,23 @@ frappe.ready(() => {
         var $navbar = $('.navbar');
         if (!$navbar.hasClass('hidden')) $navbar.addClass('hidden');
         updateTimer();
-        
+
         // Only activate detector immediately if video proctoring is OFF.
         // If ON, it will be activated after screen share is granted in showScreenShareOverlay.
         if (!exam.enable_video_proctoring) {
             activateDetector();
+
+            // If audio monitoring is enabled but there's no screen-share overlay
+            // (video proctoring is off), request mic via a lightweight overlay.
+            if (exam.enable_audio_monitoring && !audioVAD) {
+                showAudioPermissionOverlay();
+            }
         }
+    }
+
+    // Initialise mobile camera proctoring (no-op if not enabled on the exam doc)
+    if (exam["exam_submission"]) {
+        initMobileCameraSection(exam["exam_submission"]);
     }
 
     $("#nextQs").click((e) => { e.preventDefault(); submitAnswer(true); });
@@ -806,8 +1118,9 @@ function terminateForNoFace() {
     const timeout = new Promise((resolve) => setTimeout(resolve, 5000));
     Promise.race([Promise.all([snapshotPromise, terminatePromise]), timeout]).finally(() => {
         stopRecording();
-        if (detector)          detector.destroy();
+        if (detector)           detector.destroy();
         if (violationSnapshots) violationSnapshots.destroy();
+        if (audioVAD)           audioVAD.stop();
         window.location.href = "/exam/" + exam.exam_submission;
     });
 }
@@ -983,4 +1296,242 @@ function submitAnswer(loadNext) {
             }
         }
     });
+}
+
+// ─── Mobile Camera Proctoring ──────────────────────────────────────────────
+
+var mobileProctoringEnabled = false;
+var mobileCameraConnected = false;
+var mobileStatusInterval = null;
+var mobileGracePeriodTimer = null;
+var mobileGracePeriodSeconds = 60;
+
+// Block the Start Exam button until mobile camera is connected
+function blockStartExamButton() {
+  var btn = document.getElementById('quiz-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.title = 'Connect your mobile camera first';
+  btn.style.opacity = '0.5';
+  btn.style.cursor = 'not-allowed';
+}
+
+function unblockStartExamButton() {
+  var btn = document.getElementById('quiz-btn');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.title = '';
+  btn.style.opacity = '';
+  btn.style.cursor = '';
+}
+
+// Show a full-screen blocking modal with the QR code
+function showMobileQRModal(qrUrl) {
+  if (document.getElementById('mobile-qr-modal')) return; // already shown
+
+  var modal = document.createElement('div');
+  modal.id = 'mobile-qr-modal';
+  modal.style.cssText = [
+    'position:fixed',
+    'inset:0',
+    'z-index:10000',
+    'background:rgba(0,0,0,0.88)',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+  ].join(';');
+
+  modal.innerHTML = [
+    '<div style="background:#fff;border-radius:12px;padding:2rem 2.5rem;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);">',
+      '<h4 style="margin-top:0;margin-bottom:0.5rem;">📱 Connect Mobile Camera</h4>',
+      '<p style="color:#555;font-size:0.9rem;margin-bottom:1rem;">',
+        'Scan this QR code with your phone to set up the auxiliary camera.<br>',
+        '<strong>The exam will unlock once your phone is connected.</strong>',
+      '</p>',
+      '<div id="mobile-qr-container" style="display:inline-block;padding:8px;border:1px solid #ddd;border-radius:8px;background:#fff;"></div>',
+      '<div style="margin-top:0.75rem;font-size:0.78rem;color:#888;">',
+        'Or open: <a id="mobile-qr-link" href="' + qrUrl + '" target="_blank" style="color:#0070f3;word-break:break-all;">' + qrUrl + '</a>',
+      '</div>',
+      '<div id="mobile-modal-status" style="margin-top:1rem;padding:0.5rem 1rem;border-radius:6px;background:#fff3cd;color:#856404;font-weight:500;">',
+        '🔴 Waiting for mobile connection…',
+      '</div>',
+    '</div>',
+  ].join('');
+
+  document.body.appendChild(modal);
+
+  // Render QR using qrcodejs (synchronous constructor)
+  var container = document.getElementById('mobile-qr-container');
+  if (container && typeof QRCode !== 'undefined') {
+    new QRCode(container, {
+      text: qrUrl,
+      width: 200,
+      height: 200,
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } else {
+    console.warn('[Mobile] QRCode library not available yet');
+    // Retry once after a short delay in case the CDN script is still loading
+    setTimeout(function() {
+      var c2 = document.getElementById('mobile-qr-container');
+      if (c2 && typeof QRCode !== 'undefined' && !c2.querySelector('canvas,img')) {
+        new QRCode(c2, { text: qrUrl, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.M });
+      }
+    }, 1500);
+  }
+}
+
+function closeMobileQRModal() {
+  var modal = document.getElementById('mobile-qr-modal');
+  if (modal) modal.remove();
+}
+
+function updateMobileModalStatus(status) {
+  var el = document.getElementById('mobile-modal-status');
+  if (!el) return;
+  if (status === 'Connected') {
+    el.style.background = '#d1e7dd';
+    el.style.color = '#0a3622';
+    el.textContent = '🟢 Mobile camera connected! Starting exam…';
+  } else if (status === 'Disconnected') {
+    el.style.background = '#f8d7da';
+    el.style.color = '#842029';
+    el.textContent = '⚠️ Connection lost. Reconnect your phone.';
+  }
+}
+
+async function initMobileCameraSection(examSubmission) {
+  // exam global is injected by Jinja: var exam = {{ exam | tojson }}
+  // enable_mobile_proctoring and mobile_grace_period are included via index.py
+  if (!exam || !exam.enable_mobile_proctoring) return;
+
+  mobileProctoringEnabled = true;
+  mobileGracePeriodSeconds = exam.mobile_grace_period || 60;
+  window.currentExamSubmission = examSubmission;
+
+  // If exam is already started (resumed session), just start polling — no QR needed
+  if (exam.submission_status === 'Started') {
+    mobileStatusInterval = setInterval(checkMobileStatus, 3000);
+    checkMobileStatus();
+    return;
+  }
+
+  // Exam not started yet ("Registered"): show QR modal + block Start button
+  try {
+    var result = await frappe.call({
+      method: 'exampro.exam_pro.api.mobile_proctor.generate_mobile_token',
+      args: { exam_submission: examSubmission },
+    });
+
+    if (!result || !result.message || !result.message.qr_url) {
+      console.warn('[Mobile] generate_mobile_token returned unexpected response', result);
+      return;
+    }
+
+    var qrUrl = result.message.qr_url;
+    console.log('[MobileDebug] QR URL:', qrUrl);
+
+    showMobileQRModal(qrUrl);
+    blockStartExamButton();
+
+    // Start polling for connection status
+    mobileStatusInterval = setInterval(checkMobileStatus, 3000);
+    checkMobileStatus();
+
+  } catch (e) {
+    console.warn('[Mobile] Camera init failed:', e);
+  }
+}
+
+function updateMobileBadge(status) {
+  var badge = document.getElementById('mobile-status-badge');
+  var dot = document.getElementById('mobile-badge-dot');
+  var text = document.getElementById('mobile-badge-text');
+  if (!badge || !dot || !text) return;
+
+  var colours = { Connected: '#28a745', Disconnected: '#dc3545', Pending: '#6c757d' };
+  dot.style.background = colours[status] || colours.Pending;
+  text.textContent = '📱 ' + (status || 'Mobile');
+}
+
+async function checkMobileStatus() {
+  var examSubmission = window.currentExamSubmission;
+  if (!examSubmission) return;
+
+  try {
+    var result = await frappe.call({
+      method: 'exampro.exam_pro.api.mobile_proctor.get_mobile_status',
+      args: { exam_submission: examSubmission },
+    });
+
+    if (!result || !result.message) return;
+    var status = result.message.status;
+    var grace_period = result.message.grace_period;
+    if (grace_period) mobileGracePeriodSeconds = grace_period;
+
+    updateMobileBadge(status);
+
+    if (status === 'Connected') {
+      mobileCameraConnected = true;
+
+      if (!window.examStarted) {
+        // Pre-exam: show connected state in modal, then unlock Start button
+        updateMobileModalStatus('Connected');
+        setTimeout(function() {
+          closeMobileQRModal();
+          unblockStartExamButton();
+        }, 1200);
+        // Keep polling — page will reload when exam starts, restarting the interval
+        clearInterval(mobileStatusInterval);
+        mobileStatusInterval = null;
+      } else {
+        // During exam: hide disconnect overlay if it was showing
+        hideMobileDisconnectOverlay();
+      }
+
+    } else if (status === 'Disconnected') {
+      mobileCameraConnected = false;
+      if (window.examStarted) {
+        showMobileDisconnectOverlay();
+      } else {
+        updateMobileModalStatus('Disconnected');
+      }
+    }
+  } catch (e) {
+    console.warn('[Mobile] Status check failed:', e);
+  }
+}
+
+function showMobileDisconnectOverlay() {
+  if (document.getElementById('mobile-disconnect-overlay')) return;
+
+  var overlay = document.createElement('div');
+  overlay.id = 'mobile-disconnect-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;flex-direction:column;color:#fff;text-align:center;padding:2rem;';
+
+  overlay.innerHTML = '<h3>⚠️ Mobile Camera Disconnected</h3>' +
+    '<p>Please reconnect your phone camera.<br>The exam will resume automatically.</p>' +
+    '<div style="font-size:3rem;font-weight:bold;" id="grace-countdown">' + mobileGracePeriodSeconds + '</div>' +
+    '<p style="color:#aaa;">seconds remaining</p>';
+  document.body.appendChild(overlay);
+
+  var remaining = mobileGracePeriodSeconds;
+  mobileGracePeriodTimer = setInterval(function() {
+    remaining--;
+    var el = document.getElementById('grace-countdown');
+    if (el) el.textContent = remaining;
+    if (remaining <= 0) {
+      clearInterval(mobileGracePeriodTimer);
+      if (typeof submitExam === 'function') submitExam('Terminated');
+    }
+  }, 1000);
+}
+
+function hideMobileDisconnectOverlay() {
+  var overlay = document.getElementById('mobile-disconnect-overlay');
+  if (overlay) overlay.remove();
+  if (mobileGracePeriodTimer) {
+    clearInterval(mobileGracePeriodTimer);
+    mobileGracePeriodTimer = null;
+  }
 }

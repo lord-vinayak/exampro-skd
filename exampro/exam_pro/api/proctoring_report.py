@@ -19,7 +19,21 @@ WARNING_TYPE_LABELS = {
     "gazeaway": "Gaze Away",
     "nofacetimeout": "No Face (Timeout)",
     "appswitch": "App Switch",
-    "other": "Other Violation"
+    "mobile_noface": "Mobile: No Person",
+    "mobile_multiplefaces": "Mobile: Multiple Faces",
+    "mobile_disconnect": "Mobile: Disconnected",
+    "mobile_device_detected": "Mobile: Device Detected",
+    "mobile_second_person": "Mobile: Second Person",
+    "mobile_phone_detected": "Mobile: Phone Detected",
+    "mobile_notes_detected": "Mobile: Notes Detected",
+    "noise_detected": "Noise Detected",
+    "other": "Other Violation",
+}
+
+MOBILE_WARNING_TYPES = {
+    "mobile_noface", "mobile_multiplefaces", "mobile_disconnect",
+    "mobile_device_detected", "mobile_second_person",
+    "mobile_phone_detected", "mobile_notes_detected",
 }
 
 @frappe.whitelist()
@@ -80,13 +94,13 @@ def get_report_context(doc):
         "Exam Messages",
         filters={"exam_submission": doc.name, "type_of_message": "Warning"},
         fields=["name", "warning_type", "message", "timestamp", "from",
-                "webcam_snapshot_key", "screen_snapshot_key"],
+                "webcam_snapshot_key", "screen_snapshot_key", "mobile_snapshot_key"],
         order_by="timestamp asc"
     )
 
     # Separate messages into those with stored S3 keys (new) and those without (old).
-    msgs_with_keys    = [m for m in messages if m.get("webcam_snapshot_key") or m.get("screen_snapshot_key")]
-    msgs_without_keys = [m for m in messages if not m.get("webcam_snapshot_key") and not m.get("screen_snapshot_key")]
+    msgs_with_keys    = [m for m in messages if m.get("webcam_snapshot_key") or m.get("screen_snapshot_key") or m.get("mobile_snapshot_key")]
+    msgs_without_keys = [m for m in messages if not m.get("webcam_snapshot_key") and not m.get("screen_snapshot_key") and not m.get("mobile_snapshot_key")]
 
     # For old messages: fall back to listing S3 and timestamp-matching.
     snapshots   = get_s3_snapshots(doc.name) if msgs_without_keys else []
@@ -98,8 +112,9 @@ def get_report_context(doc):
     key_images = {}   # msg.name → {"webcam": data_uri | None, "screen": data_uri | None}
     for m in msgs_with_keys:
         key_images[m.name] = {
-            "webcam": _download_s3_key(s3_client, settings.s3_bucket, m.webcam_snapshot_key),
-            "screen": _download_s3_key(s3_client, settings.s3_bucket, m.screen_snapshot_key),
+            "webcam":  _download_s3_key(s3_client, settings.s3_bucket, m.webcam_snapshot_key),
+            "screen":  _download_s3_key(s3_client, settings.s3_bucket, m.screen_snapshot_key),
+            "mobile":  _download_s3_key(s3_client, settings.s3_bucket, m.mobile_snapshot_key),
         }
 
     frappe.log_error(
@@ -131,6 +146,7 @@ def get_report_context(doc):
         if msg.name in key_images:
             webcam_img = key_images[msg.name]["webcam"]
             screen_img = key_images[msg.name]["screen"]
+            mobile_img = key_images[msg.name]["mobile"]
             snapshot_diff = None
         else:
             # Path 2 — old record: match against the timestamp-based evidence_log.
@@ -144,7 +160,14 @@ def get_report_context(doc):
                     matched = group
             webcam_img = matched["webcam"] if matched else None
             screen_img = matched["screen"] if matched else None
+            mobile_img = None
             snapshot_diff = round(best_diff, 1) if matched else None
+
+        # Only include mobile image for mobile-source violations
+        if msg.warning_type in MOBILE_WARNING_TYPES:
+            mobile_img = mobile_img  # already set above from key_images
+            webcam_img = None
+            screen_img = None
 
         formatted_violations.append({
             "type": label,
@@ -155,8 +178,26 @@ def get_report_context(doc):
             "from": msg.get("from"),
             "webcam": webcam_img,
             "screen": screen_img,
+            "mobile": mobile_img,
             "snapshot_ts_diff": snapshot_diff,
+            "is_mobile_violation": msg.warning_type in MOBILE_WARNING_TYPES,
         })
+
+    # Build auxiliary camera report (post-exam object detection results)
+    aux_camera_violations = [v for v in formatted_violations if v["is_mobile_violation"]]
+
+    # Room scan presigned URL
+    room_scan_url = None
+    room_scan_key = getattr(doc, "room_scan_key", None)
+    if room_scan_key:
+        try:
+            room_scan_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": settings.s3_bucket, "Key": room_scan_key},
+                ExpiresIn=3600,
+            )
+        except Exception:
+            pass
 
     return {
         "doc": doc,
@@ -175,19 +216,32 @@ def get_report_context(doc):
         "exam_total_marks": exam.total_marks,
         "result_status": doc.result_status,
         "pass_percentage": exam.pass_percentage,
-        "attention_score": doc.attention_score or 0,
+        "attention_score": doc.attention_score or 0,   # stored as trust score now
+        "trust_score": doc.attention_score or 0,
+        "trust_score_verdict": (
+            "PASS" if (doc.attention_score or 0) >= 70
+            else "REVIEW" if (doc.attention_score or 0) >= 40
+            else "FAIL"
+        ),
         "warning_count": doc.warning_count or 0,
         "face_count_changes": doc.face_count_changes or 0,
         "total_away_time_seconds": round(doc.total_away_time or 0, 1),
         "total_distracted_time_seconds": round(doc.total_distracted_time or 0, 1),
         "max_warning_count": exam.max_warning_count,
         "video_proctoring_enabled": getattr(exam, 'enable_video_proctoring', None),
+        "mobile_proctoring_enabled": getattr(exam, 'enable_mobile_proctoring', None),
+        "mobile_analysis_status": getattr(doc, "mobile_analysis_status", "Pending"),
+        "mobile_frame_count": getattr(doc, "mobile_frame_count", 0) or 0,
+        "mobile_violation_count": getattr(doc, "mobile_violation_count", 0) or 0,
         "tracking_features": get_tracking_features(exam),
         "violations": formatted_violations,
         "violation_summary": violation_summary,
         "evidence_log": evidence_log,
         "has_violations": len(formatted_violations) > 0,
         "has_evidence": len(evidence_log) > 0,
+        "aux_camera_violations": aux_camera_violations,
+        "has_aux_camera_violations": len(aux_camera_violations) > 0,
+        "room_scan_url": room_scan_url,
         "generated_at": frappe.utils.format_datetime(frappe.utils.now_datetime(), "dd MMM yyyy hh:mm a"),
         "generated_by": frappe.session.user,
     }

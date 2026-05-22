@@ -3,6 +3,7 @@
 
 import random
 import base64
+import io
 import os
 import requests
 import uuid
@@ -56,9 +57,11 @@ def get_s3_client():
                 frappe.throw(_("Cloudflare Account ID is not configured. Please check Exam Settings."))
             client_kwargs["endpoint_url"] = f"https://{settings.aws_account_id}.r2.cloudflarestorage.com"
             client_kwargs["region_name"] = "auto"
-        # AWS S3: omit endpoint_url entirely — boto3 resolves the correct
-        # regional endpoint automatically, avoiding the doubled-bucket-name
-        # path that causes NoSuchKey on ListObjectsV2.
+        else:
+            # AWS S3: set region explicitly so SigV4 signing uses the correct endpoint.
+            # Without this, buckets outside us-east-1 return AuthorizationHeaderMalformed.
+            region = getattr(settings, "aws_region", None) or "us-east-1"
+            client_kwargs["region_name"] = region
 
         s3_client = boto3.client("s3", **client_kwargs)
         frappe.local.s3_client = s3_client
@@ -272,6 +275,15 @@ class ExamSubmission(Document):
 				# Find evaluator with least assignments
 				next_evaluator = min(evaluators, key=lambda x: current_counts.get(x, {}).get('evaluation_count', 0))
 				self.assigned_evaluator = next_evaluator
+
+	def on_update(self):
+		"""Trigger post-exam mobile analysis when submission is finalised."""
+		if self.status in ("Submitted", "Terminated"):
+			try:
+				from exampro.exam_pro.api.mobile_analysis import enqueue_mobile_analysis
+				enqueue_mobile_analysis(self.name)
+			except Exception:
+				frappe.log_error(frappe.get_traceback(), "Mobile Analysis Enqueue Error")
 
 	def before_insert(self):
 		# Check if there are any existing submissions for the same candidate and schedule
@@ -722,7 +734,10 @@ def exam_messages(exam_submission=None):
 
 	res = frappe.get_all(
 		"Exam Messages", filters={
-		"exam_submission": exam_submission
+			"exam_submission": exam_submission,
+			# Exclude audio noise violations from the candidate chat — they are
+			# only visible to the proctor via the exam submission page and report.
+			"warning_type": ["not in", ["noise_detected"]],
 		}, fields=["creation", "from", "message", "type_of_message"],
 		ignore_permissions=True
 	)
@@ -844,6 +859,32 @@ def exam_video_list(exam_submission):
 		res = {"videos": {}}
 	
 	return res
+
+@frappe.whitelist()
+def get_room_scan_url(exam_submission):
+	"""Return a 1-hour presigned S3 URL for the room scan video, or None if not uploaded."""
+	if frappe.session.user == "Guest":
+		raise frappe.PermissionError(_("Please login to access this page."))
+
+	key = frappe.db.get_value("Exam Submission", exam_submission, "room_scan_key")
+	if not key:
+		return None
+
+	try:
+		settings = frappe.get_single("Exam Settings")
+		s3_client = get_s3_client()
+		return s3_client.generate_presigned_url(
+			"get_object",
+			Params={"Bucket": settings.s3_bucket, "Key": key},
+			ExpiresIn=3600,
+		)
+	except Exception as e:
+		frappe.log_error(
+			f"Room scan URL generation failed for {exam_submission}: {e}",
+			"Room Scan: Presigned URL",
+		)
+		return None
+
 
 #########################
 ### Examiner APIs ########
@@ -1253,7 +1294,7 @@ def save_violation_snapshot(
 	if warning_type != violation_type:
 		msg_parts.append(f"(violation: {violation_type})")
 
-	frappe.get_doc({
+	msg_doc = frappe.get_doc({
 		"doctype": "Exam Messages",
 		"exam_submission": exam_submission,
 		"timestamp": frappe.utils.now(),
@@ -1266,6 +1307,168 @@ def save_violation_snapshot(
 		"screen_snapshot_key": uploaded_screen_key,
 	}).insert(ignore_permissions=True)
 
+	# Request an instant mobile snapshot tied to this violation.
+	# The mobile phone polls check_snapshot_request every 2s and will
+	# immediately upload a frame linked back to msg_doc.name.
+	try:
+		exam = frappe.db.get_value("Exam Submission", exam_submission, "exam")
+		if frappe.db.get_value("Exam", exam, "enable_mobile_proctoring"):
+			frappe.db.set_value(
+				"Exam Submission",
+				exam_submission,
+				{
+					"mobile_snapshot_requested": 1,
+					"mobile_snapshot_violation_ref": msg_doc.name,
+				},
+				update_modified=False,
+			)
+	except Exception:
+		pass  # non-critical — don't fail the violation save
+
 	frappe.db.commit()
 
 	return {"status": "success", "snapshot_urls": snapshot_urls}
+
+
+@frappe.whitelist()
+def get_mobile_violation_snapshots(exam_submission):
+	"""Return mobile violation snapshots with presigned S3 URLs for display."""
+	messages = frappe.get_all(
+		"Exam Messages",
+		filters={
+			"exam_submission": exam_submission,
+			"mobile_snapshot_key": ["is", "set"],
+		},
+		fields=["name", "warning_type", "timestamp", "mobile_snapshot_key", "message"],
+		order_by="timestamp asc",
+	)
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	for msg in messages:
+		if msg.mobile_snapshot_key:
+			try:
+				msg["snapshot_url"] = s3_client.generate_presigned_url(
+					"get_object",
+					Params={"Bucket": settings.s3_bucket, "Key": msg.mobile_snapshot_key},
+					ExpiresIn=3600,
+				)
+			except Exception:
+				msg["snapshot_url"] = None
+
+	return messages
+
+
+# ---------------------------------------------------------------------------
+# Audio monitoring APIs
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def save_audio_clip(exam_submission, audio_data, window_index=0, description=""):
+	"""
+	Called by the exam browser every 30 seconds when noise is detected in that window.
+
+	Stores the raw WebM audio blob (base64-encoded) to S3 and creates an
+	Exam Messages violation record (warning_type='noise_detected').
+
+	Args:
+		exam_submission: Exam Submission document name
+		audio_data:      base64-encoded WebM audio blob (may include data-URI prefix)
+		window_index:    sequential window number (0-based) from exam start
+		description:     optional human-readable detail (e.g. peak RMS value)
+	"""
+	candidate = frappe.db.get_value("Exam Submission", exam_submission, "candidate")
+	if not candidate:
+		frappe.throw(_("Exam submission not found."))
+
+	if frappe.session.user != candidate:
+		frappe.throw(_("Permission denied."), frappe.PermissionError)
+
+	status = frappe.db.get_value("Exam Submission", exam_submission, "status")
+	if status not in ("Started",):
+		return {"status": "skipped", "reason": f"Exam status is '{status}', not 'Started'."}
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	# Strip data-URI prefix if present (e.g. "data:audio/webm;base64,")
+	if "," in audio_data:
+		audio_data = audio_data.split(",", 1)[1]
+
+	try:
+		audio_bytes = base64.b64decode(audio_data)
+	except Exception as e:
+		frappe.log_error(f"Audio clip base64 decode failed: {e}", "Audio Monitoring")
+		return {"status": "error", "reason": "Invalid audio data."}
+
+	ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+	audio_key = f"{exam_submission}/audio/window_{int(window_index):05d}_{ts}.webm"
+
+	try:
+		s3_client.upload_fileobj(
+			io.BytesIO(audio_bytes),
+			settings.s3_bucket,
+			audio_key,
+			ExtraArgs={"ContentType": "audio/webm"},
+		)
+	except Exception as e:
+		frappe.log_error(
+			f"Audio clip upload failed — submission={exam_submission}: {e}",
+			"Audio Monitoring: Upload",
+		)
+		return {"status": "error", "reason": "Upload failed."}
+
+	msg_text = description or f"Noise detected in 30-second window #{int(window_index) + 1}"
+
+	frappe.get_doc({
+		"doctype": "Exam Messages",
+		"exam_submission": exam_submission,
+		"timestamp": frappe.utils.now(),
+		"from": "System",
+		"from_user": candidate,
+		"message": msg_text,
+		"type_of_message": "Warning",
+		"warning_type": "noise_detected",
+		"audio_clip_key": audio_key,
+	}).insert(ignore_permissions=True)
+
+	frappe.db.commit()
+	return {"status": "success", "audio_key": audio_key}
+
+
+@frappe.whitelist()
+def get_audio_recordings(exam_submission):
+	"""
+	Return all noise-detected violation records with presigned S3 audio URLs.
+	Called by the Exam Submission form client script to render the audio section.
+	"""
+	messages = frappe.get_all(
+		"Exam Messages",
+		filters={
+			"exam_submission": exam_submission,
+			"warning_type": "noise_detected",
+		},
+		fields=["name", "timestamp", "message", "audio_clip_key"],
+		order_by="timestamp asc",
+	)
+
+	if not messages:
+		return []
+
+	settings = frappe.get_single("Exam Settings")
+	s3_client = get_s3_client()
+
+	for msg in messages:
+		msg["audio_url"] = None
+		if msg.get("audio_clip_key"):
+			try:
+				msg["audio_url"] = s3_client.generate_presigned_url(
+					"get_object",
+					Params={"Bucket": settings.s3_bucket, "Key": msg.audio_clip_key},
+					ExpiresIn=3600,
+				)
+			except Exception:
+				pass
+
+	return messages

@@ -3,7 +3,7 @@
 head_include %}
 {{ super() }}
 {% for ext in page_extensions %} {{ ext.render_header() }} {% endfor %}
-<link rel="stylesheet" href="/assets/exampro/css/exam-index.css" />
+<link rel="stylesheet" href="/assets/exampro/css/exam-index.css?v={{ asset_version }}" />
 {% endblock %} {% block page_content %}
 
 <div class="container mt-4 mb-4">
@@ -132,6 +132,8 @@ head_include %}
           {% endif %}
         </div>
       </div>
+
+      <!-- Mobile camera modal is injected dynamically by examform.js -->
     </div>
     <div class="col-md-9">
       <!-- Main content -->
@@ -263,6 +265,14 @@ head_include %}
     </div>
   </div>
   {% endif %}
+  <!-- Mobile camera status badge (shown only when mobile proctoring is enabled) -->
+  {% if exam and exam.enable_mobile_proctoring %}
+  <div id="mobile-status-badge" style="position:fixed; bottom:1rem; right:1rem; z-index:9000; background:#1a1a1a; color:#fff; border-radius:999px; padding:0.35rem 0.9rem; font-size:0.78rem; font-weight:600; box-shadow:0 2px 8px rgba(0,0,0,0.35); display:flex; align-items:center; gap:0.4rem;">
+    <span id="mobile-badge-dot" style="width:8px;height:8px;border-radius:50%;background:#6c757d;display:inline-block;"></span>
+    <span id="mobile-badge-text">📱 Mobile</span>
+  </div>
+  {% endif %}
+
   <!-- No-face termination countdown banner -->
   <div id="noFaceBanner" style="display:none; position:fixed; top:0; left:0; right:0; z-index:9999; background:#dc3545; color:#fff; padding:15px 20px; text-align:center; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.3);">
     <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -299,10 +309,11 @@ head_include %}
 </script>
 
 <script src="https://www.WebRTC-Experiment.com/RecordRTC.js"></script>
-<script src="/assets/exampro/js/bootstrap-calculator.js"></script>
+<script src="/assets/exampro/js/bootstrap-calculator.js?v={{ asset_version }}"></script>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="/assets/exampro/js/violationSnapshots.js"></script>
+<script src="/assets/exampro/js/violationSnapshots.js?v={{ asset_version }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 
 {% if exam.enable_video_proctoring %}
 <!-- MediaPipe dependencies -->
@@ -310,16 +321,13 @@ head_include %}
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
 <!-- Gazer.js library -->
-<script type="text/javascript" src="/assets/exampro/js/gazer.js"></script>
+<script type="text/javascript" src="/assets/exampro/js/gazer.js?v={{ asset_version }}"></script>
 {% endif %}
-<script type="text/javascript" src="/assets/exampro/js/examutils.js"></script>
-<script
-  type="text/javascript"
-  src="/assets/exampro/js/inactivityDetector.js"
-></script>
-<script type="text/javascript" src="/assets/exampro/js/examform.js"></script>
-<script type="text/javascript" src="/assets/exampro/js/exam-index.js"></script>
-<script type="text/javascript" src="/assets/exampro/js/chatbox.js"></script>
+<script type="text/javascript" src="/assets/exampro/js/examutils.js?v={{ asset_version }}"></script>
+<script type="text/javascript" src="/assets/exampro/js/inactivityDetector.js?v={{ asset_version }}"></script>
+<script type="text/javascript" src="/assets/exampro/js/examform.js?v={{ asset_version }}"></script>
+<script type="text/javascript" src="/assets/exampro/js/exam-index.js?v={{ asset_version }}"></script>
+<script type="text/javascript" src="/assets/exampro/js/chatbox.js?v={{ asset_version }}"></script>
 <script type="text/javascript">
   // Initialize chatbox for exam page
   $(document).ready(function() {

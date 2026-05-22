@@ -16,6 +16,10 @@
   "flexible_time_ends_in",
   "column_break_10",
   "enable_video_proctoring",
+  "enable_mobile_proctoring",
+  "mobile_grace_period",
+  "require_room_scan",
+  "enable_audio_monitoring",
   "enable_calculator",
   "enable_chat",
   "max_warning_count",
@@ -239,6 +243,34 @@
    "fieldname": "enable_video_proctoring",
    "fieldtype": "Check",
    "label": "Enable Video Proctoring"
+  },
+  {
+   "fieldname": "enable_mobile_proctoring",
+   "fieldtype": "Check",
+   "label": "Enable Mobile Camera Proctoring"
+  },
+  {
+   "default": "60",
+   "depends_on": "eval:doc.enable_mobile_proctoring",
+   "description": "Seconds to wait for mobile camera to reconnect before pausing the exam",
+   "fieldname": "mobile_grace_period",
+   "fieldtype": "Int",
+   "label": "Mobile Camera Grace Period (seconds)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_mobile_proctoring",
+   "description": "Candidate must record a 15-second 360° video of their room before starting the exam",
+   "fieldname": "require_room_scan",
+   "fieldtype": "Check",
+   "label": "Require Room Scan Video"
+  },
+  {
+   "default": "0",
+   "description": "Continuously monitor microphone audio and flag 30-second windows where noise exceeds the threshold",
+   "fieldname": "enable_audio_monitoring",
+   "fieldtype": "Check",
+   "label": "Enable Audio Monitoring"
   },
   {
    "default": "3",

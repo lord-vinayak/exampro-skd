@@ -11,6 +11,7 @@
   "aws_key",
   "aws_secret",
   "s3_bucket",
+  "aws_region",
   "user_settings_section",
   "restrict_user_account_domains"
  ],
@@ -34,6 +35,12 @@
    "fieldname": "s3_bucket",
    "fieldtype": "Data",
    "label": "S3/R2 Bucket Name"
+  },
+  {
+   "description": "AWS S3 region where your bucket lives (e.g. ap-south-1, us-east-1). Leave blank for Cloudflare R2.",
+   "fieldname": "aws_region",
+   "fieldtype": "Data",
+   "label": "AWS S3 Region"
   },
   {
    "fieldname": "video_proctoring_settings_section",

@@ -69,13 +69,32 @@ class ViolationSnapshotManager {
    * @returns {Promise<boolean>} true if permission granted, false if denied
    */
   async requestScreenCapture() {
+    // Guard only against a completely absent mediaDevices object.
+    // We do NOT do a strict typeof check for getDisplayMedia here because
+    // Android Chrome may expose the function without passing that check in all
+    // versions.  Instead we let the try/catch below handle any TypeError
+    // (function missing) or NotAllowedError (user cancelled) uniformly.
+    if (!navigator.mediaDevices) {
+      console.warn('[ViolationSnapshot] navigator.mediaDevices unavailable. Screen capture disabled.');
+      return false;
+    }
+
     try {
+      // On Android Chrome the screen is portrait (~1080×2400).
+      // Passing landscape-fixed width/height ideals (1920×1080) can cause the
+      // stream to be delivered at unexpected dimensions or be rejected entirely.
+      // Detect mobile and omit fixed size constraints so the browser picks the
+      // native screen resolution.
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
       this._screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: 'monitor',   // hints browser to show "Entire Screen" first
+        video: isMobile ? {
+          displaySurface: 'monitor', // tells Android Chrome to offer "Screen" first
+          frameRate:      { ideal: 10 },
+        } : {
+          displaySurface: 'monitor',
           width:          { ideal: 1920 },
           height:         { ideal: 1080 },
-          frameRate:      { ideal: 15 }, // higher fps = more timely snapshots
+          frameRate:      { ideal: 15 },
         },
         audio: false,
       });
@@ -86,11 +105,25 @@ class ViolationSnapshotManager {
       this._screenVideo.srcObject   = this._screenStream;
       this._screenVideo.muted       = true;
       this._screenVideo.playsInline = true;
-      // Keep it in the DOM but completely invisible
+      this._screenVideo.autoplay    = true;
+      // Keep it in the DOM but completely invisible.
+      // NOTE: do NOT use 1×1px — Chrome on Android aborts play() on elements
+      // it considers "too small to be meaningful". 4×4px avoids that heuristic
+      // while remaining visually invisible.
       this._screenVideo.style.cssText =
-        'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;';
+        'position:fixed;top:-9999px;left:-9999px;width:4px;height:4px;opacity:0;pointer-events:none;';
       document.body.appendChild(this._screenVideo);
-      await this._screenVideo.play();
+
+      // ── CRITICAL: do NOT await play() inside the try/catch ──────────────────
+      // On Android Chrome, returning from the native OS screen-picker can cause
+      // play() to throw AbortError even though the stream is perfectly valid.
+      // If play() failure were inside the outer try/catch it would call
+      // _teardownScreenStream() and destroy the stream we just obtained.
+      // Instead: fire-and-forget. autoplay=true handles actual playback;
+      // we only log the error and never let it kill the stream.
+      this._screenVideo.play().catch(err => {
+        console.warn('[ViolationSnapshot] play() non-fatal (autoplay will handle it):', err.name, err.message);
+      });
 
       // If the candidate stops sharing manually (clicks "Stop sharing"), clean up
       this._screenStream.getVideoTracks()[0].addEventListener('ended', () => {
@@ -104,7 +137,9 @@ class ViolationSnapshotManager {
 
     } catch (err) {
       // NotAllowedError = candidate clicked Cancel in the browser dialog
-      console.warn('[ViolationSnapshot] Screen share denied or cancelled:', err.message);
+      // TypeError       = getDisplayMedia not available on this browser/version
+      // Any error here means getDisplayMedia itself failed — stream was never obtained.
+      console.warn('[ViolationSnapshot] Screen share failed:', err.name, err.message);
       this._teardownScreenStream();
       if (this.options.onScreenShareDenied) this.options.onScreenShareDenied(err);
       return false;

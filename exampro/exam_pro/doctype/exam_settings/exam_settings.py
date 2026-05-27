@@ -68,3 +68,47 @@ def validate_video_settings():
 	except Exception as e:
 		frappe.msgprint(f"Video storage error: Unexpected error validating settings: {str(e)}")
 		return False
+
+
+@frappe.whitelist()
+def configure_s3_cors():
+	"""
+	Apply a CORS policy to the configured S3 bucket so that presigned audio/video
+	URLs can be loaded by the browser from the exam domain.
+
+	Must be called once after S3 credentials are saved in Exam Settings.
+	"""
+	settings = frappe.get_single("Exam Settings")
+	aws_secret = settings.get_password("aws_secret")
+	if not (settings.aws_account_id and settings.aws_key and aws_secret and settings.s3_bucket):
+		frappe.throw("All AWS/Cloudflare credentials and bucket name are required before configuring CORS.")
+
+	client_kwargs = {
+		"aws_access_key_id": settings.aws_key,
+		"aws_secret_access_key": aws_secret,
+	}
+	if settings.storage_provider == "Cloudflare R2":
+		client_kwargs["endpoint_url"] = f"https://{settings.aws_account_id}.r2.cloudflarestorage.com"
+
+	s3_client = boto3.client("s3", **client_kwargs)
+
+	cors_config = {
+		"CORSRules": [
+			{
+				"AllowedHeaders": ["*"],
+				"AllowedMethods": ["GET", "HEAD"],
+				"AllowedOrigins": ["*"],
+				"ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "Content-Type"],
+				"MaxAgeSeconds": 3600,
+			}
+		]
+	}
+
+	try:
+		s3_client.put_bucket_cors(
+			Bucket=settings.s3_bucket,
+			CORSConfiguration=cors_config,
+		)
+		return {"success": True, "message": f"CORS configured successfully for bucket '{settings.s3_bucket}'."}
+	except ClientError as e:
+		frappe.throw(f"Failed to configure S3 CORS: {e.response['Error']['Message']}")

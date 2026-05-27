@@ -378,13 +378,13 @@ def calculate_trust_score(exam_submission):
     Formula:  E = max(0, 100 − Σ(xₖ × wₖ))
 
     Violation weights (per the Integrity Score Formula spec):
-        tabchange                                     →  5 pts each
+        tabchange                                     →  15 pts each
         noise_detected                                →  3 pts each
         noface / nofacetimeout                        → 10 pts each
         mobile_phone_detected / mobile_notes_detected
             / mobile_device_detected                  →  8 pts each
         multiplefaces / mobile_multiplefaces
-            / mobile_second_person                    → 15 pts each
+            / mobile_second_person                    → 10 pts each
 
     Score bands:
         70 – 100  PASS    (no action needed)
@@ -398,16 +398,16 @@ def calculate_trust_score(exam_submission):
         dict with 'score', 'verdict', and per-category counts.
     """
     WEIGHTS = {
-        "tabchange":              5,
+        "tabchange":              15,
         "noise_detected":         3,
         "noface":                10,
         "nofacetimeout":         10,
         "mobile_phone_detected":  8,
         "mobile_notes_detected":  8,
         "mobile_device_detected": 8,
-        "multiplefaces":         15,
-        "mobile_multiplefaces":  15,
-        "mobile_second_person":  15,
+        "multiplefaces":         10,
+        "mobile_multiplefaces":  10,
+        "mobile_second_person":  10,
     }
 
     # Fetch all Warning-type messages for this submission

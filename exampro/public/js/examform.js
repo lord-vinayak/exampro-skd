@@ -64,6 +64,18 @@ function showScreenShareOverlay() {
     if (!exam.enable_video_proctoring) return;
     if (document.getElementById('screenShareOverlay')) return;
 
+    // Platform detection — drives both the overlay copy and the proceed logic.
+    const isAndroid = /android/i.test(navigator.userAgent);
+    const isIOS     = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+    // On Android we always attempt getDisplayMedia (Chrome 116+ supports full-screen
+    // capture; older versions will throw, which we catch gracefully).
+    // On iOS getDisplayMedia is completely unsupported at the OS level — skip it.
+    // On desktop we require screen share and block if the user cancels.
+    const willAttemptScreenShare = isAndroid || !!(
+        !isIOS && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function'
+    );
+
     const overlay = document.createElement('div');
     overlay.id = 'screenShareOverlay';
     overlay.style.cssText = `
@@ -72,41 +84,75 @@ function showScreenShareOverlay() {
         display:flex;align-items:center;justify-content:center;
         font-family:inherit;`;
 
-    overlay.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:480px;
-                    width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
-            <div style="font-size:48px;margin-bottom:16px;">🖥️</div>
-            <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Screen Monitoring Required</h3>
-            <p style="margin:0 0 24px;color:#555;line-height:1.6;">
-                This exam requires screen monitoring. When the browser dialog appears,
-                select <strong>"Entire Screen"</strong> and click <em>Share</em>.
-            </p>
-            <button id="screenShareBtn"
-                style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
-                       padding:14px 32px;font-size:1rem;cursor:pointer;width:100%;
-                       font-weight:600;transition:background 0.2s;">
-                Enable Screen Monitoring
-            </button>
-            <p style="margin:16px 0 0;font-size:0.8rem;color:#999;">
-                The exam cannot proceed without screen sharing.
-            </p>
-        </div>`;
+    if (willAttemptScreenShare) {
+        // Android Chrome labels the picker option "Screen" (not "Entire Screen").
+        const instruction = isAndroid
+            ? `When the screen-picker appears, tap <strong>"Screen"</strong> to share your entire phone screen, then tap <em>Start now</em>.`
+            : `When the browser dialog appears, select <strong>"Entire Screen"</strong> and click <em>Share</em>.`;
+
+        overlay.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:480px;
+                        width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
+                <div style="font-size:48px;margin-bottom:16px;">🖥️</div>
+                <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Screen Monitoring Required</h3>
+                <p style="margin:0 0 24px;color:#555;line-height:1.6;">
+                    This exam requires screen monitoring. ${instruction}
+                </p>
+                <button id="screenShareBtn"
+                    style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
+                           padding:14px 32px;font-size:1rem;cursor:pointer;width:100%;
+                           font-weight:600;transition:background 0.2s;">
+                    Enable Screen Monitoring
+                </button>
+                <p style="margin:16px 0 0;font-size:0.8rem;color:#999;">
+                    The exam cannot proceed without screen sharing.
+                </p>
+            </div>`;
+    } else {
+        // iOS and other browsers where screen capture is impossible at the OS level.
+        // Webcam proctoring remains active; screen snapshots are simply skipped.
+        overlay.innerHTML = `
+            <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:480px;
+                        width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
+                <div style="font-size:48px;margin-bottom:16px;">📱</div>
+                <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Mobile Browser Detected</h3>
+                <p style="margin:0 0 24px;color:#555;line-height:1.6;">
+                    Screen monitoring is not supported in this browser.
+                    Webcam proctoring will remain active.
+                    For full proctoring, use a desktop browser.
+                </p>
+                <button id="screenShareBtn"
+                    style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
+                           padding:14px 32px;font-size:1rem;cursor:pointer;width:100%;
+                           font-weight:600;transition:background 0.2s;">
+                    Continue to Exam
+                </button>
+            </div>`;
+    }
 
     document.body.appendChild(overlay);
 
-    // Button click = user gesture → getDisplayMedia can be called here
+    // Button click = user gesture → getDisplayMedia / getUserMedia can be called here
     document.getElementById('screenShareBtn').addEventListener('click', async function () {
         this.disabled = true;
-        this.textContent = 'Waiting for permission…';
+        this.textContent = 'Please wait…';
 
-        if (!violationSnapshots) {
-            console.warn('[ScreenShare] violationSnapshots not ready yet.');
-            this.disabled = false;
-            this.textContent = 'Enable Screen Monitoring';
-            return;
+        let granted = false;
+
+        if (willAttemptScreenShare) {
+            if (!violationSnapshots) {
+                console.warn('[ScreenShare] violationSnapshots not ready yet.');
+                this.disabled = false;
+                this.textContent = 'Enable Screen Monitoring';
+                return;
+            }
+            // requestScreenCapture() handles both the happy path and any error
+            // (TypeError when getDisplayMedia is absent, NotAllowedError when user
+            // cancels) — it always resolves to true/false, never throws.
+            granted = await violationSnapshots.requestScreenCapture();
+        } else {
+            console.log('[ScreenShare] Skipping screen capture — not supported on this browser.');
         }
-
-        const granted = await violationSnapshots.requestScreenCapture();
 
         // Request microphone permission in the same user-gesture if audio monitoring is enabled
         if (exam.enable_audio_monitoring && !audioVAD) {
@@ -130,11 +176,18 @@ function showScreenShareOverlay() {
             }
         }
 
-        if (granted) {
+        // Decide whether to proceed:
+        //   • Screen share active (any platform)              → always proceed
+        //   • iOS / unsupported browser                       → always proceed (skip snapshots)
+        //   • Android + screen share failed/cancelled         → proceed anyway (best-effort)
+        //   • Desktop + user cancelled                        → block, show "Try Again"
+        const shouldProceed = granted || !willAttemptScreenShare || isAndroid;
+
+        if (shouldProceed) {
             overlay.remove();
-            activateDetector(); // Start detecting tab changes ONLY after screen share is granted
+            activateDetector();
         } else {
-            // User cancelled — re-enable button so they can try again
+            // Desktop only: user cancelled — give them another chance
             this.disabled = false;
             this.textContent = 'Try Again';
             const note = overlay.querySelector('p:last-of-type');
@@ -618,9 +671,22 @@ function startRecording() {
             }
 
             if (exam["submission_status"] === "Started") {
+                // Pick the best supported mimeType for this browser.
+                // iOS Safari supports only video/mp4; desktop Chrome/Firefox prefer video/webm.
+                // Passing an unsupported mimeType to RecordRTC / MediaRecorder throws on iOS.
+                const _videoTypes = [
+                    'video/webm;codecs=vp9',
+                    'video/webm;codecs=vp8',
+                    'video/webm',
+                    'video/mp4',
+                ];
+                const _supportedVideoMime = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported)
+                    ? (_videoTypes.find(t => MediaRecorder.isTypeSupported(t)) || '')
+                    : '';
+
                 recorder = RecordRTC(recordingStream, {
                     type:             'video',
-                    mimeType:         'video/webm',
+                    mimeType:         _supportedVideoMime || 'video/webm',
                     videoBitsPerSecond: 8000,
                     disableLogs:       true
                 });

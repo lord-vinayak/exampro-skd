@@ -8,6 +8,27 @@
 // });
 frappe.ui.form.on("Exam Settings", {
     refresh(frm) {
+        frm.add_custom_button(__('Configure S3 CORS'), function() {
+            frappe.confirm(
+                __('This will apply a CORS policy to your S3/R2 bucket allowing audio and video files to be played in the browser. Proceed?'),
+                function() {
+                    frappe.call({
+                        method: 'exampro.exam_pro.doctype.exam_settings.exam_settings.configure_s3_cors',
+                        freeze: true,
+                        freeze_message: __('Configuring S3 CORS...'),
+                        callback: function(r) {
+                            if (r.message && r.message.success) {
+                                frappe.msgprint({
+                                    title: __('Success'),
+                                    message: r.message.message,
+                                    indicator: 'green',
+                                });
+                            }
+                        },
+                    });
+                }
+            );
+        }, __('Storage'));
     },
     
     validate(frm) {

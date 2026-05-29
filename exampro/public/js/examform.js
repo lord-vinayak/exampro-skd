@@ -67,13 +67,24 @@ function showScreenShareOverlay() {
     // Platform detection — drives both the overlay copy and the proceed logic.
     const isAndroid = /android/i.test(navigator.userAgent);
     const isIOS     = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isMobile  = isAndroid || isIOS;
 
-    // On Android we always attempt getDisplayMedia (Chrome 116+ supports full-screen
-    // capture; older versions will throw, which we catch gracefully).
-    // On iOS getDisplayMedia is completely unsupported at the OS level — skip it.
-    // On desktop we require screen share and block if the user cancels.
-    const willAttemptScreenShare = isAndroid || !!(
-        !isIOS && navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function'
+    // ── KEY PLATFORM FACT (verified against caniuse, May 2026) ────────────────
+    // getDisplayMedia (OS screen capture) is NOT implemented in ANY mobile
+    // browser — Chrome for Android 148, Firefox Android 150 and Samsung Internet
+    // all report it unsupported. Mobile browsers do not expose Android's
+    // MediaProjection API to JavaScript, so the native "share whole screen"
+    // picker can never be triggered from a web page.
+    //
+    // Therefore on mobile we do NOT attempt screen share. Instead each violation
+    // captures TWO things at the violation instant:
+    //   1. the front-camera frame (synchronous, zero delay), and
+    //   2. the exam BROWSER WINDOW rendered via html2canvas (what's on the page).
+    // Both are handled automatically inside ViolationSnapshotManager.capture().
+    //
+    // Only desktop browsers with getDisplayMedia get the OS screen-share flow.
+    const willAttemptScreenShare = !isMobile && !!(
+        navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function'
     );
 
     const overlay = document.createElement('div');
@@ -104,22 +115,24 @@ function showScreenShareOverlay() {
                            font-weight:600;transition:background 0.2s;">
                     Enable Screen Monitoring
                 </button>
-                <p style="margin:16px 0 0;font-size:0.8rem;color:#999;">
+                <p data-screen-share-note style="margin:16px 0 0;font-size:0.8rem;color:#999;">
                     The exam cannot proceed without screen sharing.
                 </p>
             </div>`;
     } else {
-        // iOS and other browsers where screen capture is impossible at the OS level.
-        // Webcam proctoring remains active; screen snapshots are simply skipped.
+        // Mobile devices (Android/iOS). The OS screen cannot be captured from a
+        // mobile browser, so we don't ask for screen share. Proctoring still runs:
+        // every violation instantly captures the front camera AND a snapshot of
+        // the exam page (browser window) — no extra permission needed.
         overlay.innerHTML = `
             <div style="background:#fff;border-radius:12px;padding:40px 48px;max-width:480px;
                         width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);">
                 <div style="font-size:48px;margin-bottom:16px;">📱</div>
-                <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Mobile Browser Detected</h3>
+                <h3 style="margin:0 0 12px;font-size:1.4rem;color:#1a1a1a;">Proctoring Active</h3>
                 <p style="margin:0 0 24px;color:#555;line-height:1.6;">
-                    Screen monitoring is not supported in this browser.
-                    Webcam proctoring will remain active.
-                    For full proctoring, use a desktop browser.
+                    This exam is monitored on your phone. If a violation is detected,
+                    your <strong>front camera</strong> and the <strong>exam screen</strong>
+                    are captured instantly. Keep this tab open and stay in view of the camera.
                 </p>
                 <button id="screenShareBtn"
                     style="background:#1a73e8;color:#fff;border:none;border-radius:8px;
@@ -138,18 +151,84 @@ function showScreenShareOverlay() {
         this.textContent = 'Please wait…';
 
         let granted = false;
+        let failReason = '';  // tracks WHY screen capture failed — shown to user
 
         if (willAttemptScreenShare) {
             if (!violationSnapshots) {
-                console.warn('[ScreenShare] violationSnapshots not ready yet.');
+                // ViolationSnapshotManager wasn't created — webcam likely failed.
+                console.warn('[ScreenShare] violationSnapshots not initialised — webcam may have been denied.');
+                const note = overlay.querySelector('[data-screen-share-note]');
+                if (note) {
+                    note.style.color = '#d32f2f';
+                    note.textContent = 'Camera is not active. Please allow camera access and refresh the page.';
+                }
                 this.disabled = false;
                 this.textContent = 'Enable Screen Monitoring';
                 return;
             }
-            // requestScreenCapture() handles both the happy path and any error
-            // (TypeError when getDisplayMedia is absent, NotAllowedError when user
-            // cancels) — it always resolves to true/false, never throws.
-            granted = await violationSnapshots.requestScreenCapture();
+
+            // ── Comprehensive pre-flight diagnostics ─────────────────────────────
+            //
+            // KEY INSIGHT: window.isSecureContext is NOT a reliable proxy for whether
+            // getDisplayMedia is available on Android Chrome.
+            //   • http://localhost → isSecureContext = TRUE (W3C spec exception) but
+            //     Android Chrome still does NOT expose getDisplayMedia on http:// URLs.
+            //   • Only location.protocol === 'https:' reliably indicates the API will work.
+            //
+            // We therefore check API availability first, then diagnose WHY it's missing.
+            const _ua = navigator.userAgent;
+            const _isFirefox  = /firefox|fxios/i.test(_ua);
+            const _isWebView  = /android/i.test(_ua) && /wv\b/i.test(_ua);
+            const _isHttps    = location.protocol === 'https:';
+            const _hasGDM     = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
+            // Log the complete diagnostic state — visible in DevTools / ADB logcat.
+            console.log('[ScreenShare] Pre-flight diagnostics:', {
+                url:              location.href,
+                protocol:         location.protocol,
+                isHttps:          _isHttps,
+                isSecureContext:  window.isSecureContext,
+                hasGetDisplayMedia: _hasGDM,
+                mediaDevices:     !!navigator.mediaDevices,
+                isAndroid,
+                isFirefox:        _isFirefox,
+                isWebView:        _isWebView,
+                userAgent:        _ua,
+            });
+
+            if (!_hasGDM) {
+                // API is missing — determine the specific reason so we can show an
+                // actionable message (not just a generic "unsupported browser" note).
+                if (_isFirefox) {
+                    // Firefox on Android does not implement getDisplayMedia at all.
+                    failReason = 'browser_firefox';
+                    console.warn('[ScreenShare] Firefox detected — getDisplayMedia not supported.');
+                } else if (_isWebView) {
+                    // Android in-app browser / Chrome Custom Tab / WebView.
+                    failReason = 'browser_webview';
+                    console.warn('[ScreenShare] Android WebView detected — getDisplayMedia not available.');
+                } else if (!_isHttps) {
+                    // http:// URL — this covers BOTH the obvious case (192.168.x.x) AND
+                    // the subtle case (http://localhost) where isSecureContext is true but
+                    // Android Chrome still hides getDisplayMedia because the scheme is http.
+                    failReason = 'insecure_context';
+                    console.error('[ScreenShare] HTTP detected (protocol:', location.protocol,
+                        ') — getDisplayMedia requires https://. isSecureContext was:',
+                        window.isSecureContext, '— this can be true on localhost over HTTP,',
+                        'which is why we check protocol directly.');
+                } else {
+                    // HTTPS + not Firefox + not WebView, but still no getDisplayMedia.
+                    // Could be: Android OS version < 10, Samsung/MIUI browser, Permissions-Policy header.
+                    failReason = 'api_unavailable';
+                    console.warn('[ScreenShare] getDisplayMedia absent on HTTPS. Possible causes:',
+                        'Android < 10, non-Chromium browser, or Permissions-Policy restriction.');
+                }
+            } else {
+                // API present — attempt the actual capture.
+                // requestScreenCapture() always resolves true/false, never throws.
+                granted = await violationSnapshots.requestScreenCapture();
+                if (!granted) failReason = 'user_cancelled';
+            }
         } else {
             console.log('[ScreenShare] Skipping screen capture — not supported on this browser.');
         }
@@ -176,23 +255,111 @@ function showScreenShareOverlay() {
             }
         }
 
-        // Decide whether to proceed:
-        //   • Screen share active (any platform)              → always proceed
-        //   • iOS / unsupported browser                       → always proceed (skip snapshots)
-        //   • Android + screen share failed/cancelled         → proceed anyway (best-effort)
-        //   • Desktop + user cancelled                        → block, show "Try Again"
-        const shouldProceed = granted || !willAttemptScreenShare || isAndroid;
+        // ── Decide whether to proceed ─────────────────────────────────────────
+        //   • Screen share active (any platform)        → proceed
+        //   • iOS / unsupported browser                 → proceed (skip snapshots)
+        //   • Desktop + user cancelled                  → block, show "Try Again"
+        //   • Android + technical failure (HTTP / API)  → show diagnostic, offer "Continue Anyway"
+        //   • Android + user cancelled picker           → show "Try Again" with option to continue
 
-        if (shouldProceed) {
+        if (granted || !willAttemptScreenShare) {
             overlay.remove();
             activateDetector();
+            return;
+        }
+
+        // Screen share was attempted but failed. Show the reason.
+        const note = overlay.querySelector('[data-screen-share-note]');
+
+        if (failReason === 'browser_firefox') {
+            // Firefox on Android — getDisplayMedia is not implemented at all.
+            if (note) {
+                note.style.color = '#d32f2f';
+                note.innerHTML =
+                    '⚠️ Firefox does not support screen sharing on Android. ' +
+                    'Please open this exam in <strong>Chrome (version 116 or later)</strong> ' +
+                    'to enable screen monitoring.';
+            }
+            this.textContent = 'Continue Without Screen Monitoring';
+            this.disabled = false;
+            this.addEventListener('click', () => { overlay.remove(); activateDetector(); }, { once: true });
+
+        } else if (failReason === 'browser_webview') {
+            // In-app browser / WebView — doesn't have getDisplayMedia.
+            if (note) {
+                note.style.color = '#d32f2f';
+                note.innerHTML =
+                    '⚠️ Screen sharing is not available in this in-app browser. ' +
+                    'Please open this exam directly in the <strong>Chrome app</strong> ' +
+                    '(not from inside another app like Gmail, WhatsApp, etc.).';
+            }
+            this.textContent = 'Continue Without Screen Monitoring';
+            this.disabled = false;
+            this.addEventListener('click', () => { overlay.remove(); activateDetector(); }, { once: true });
+
+        } else if (failReason === 'insecure_context') {
+            // HTTP URL — this covers both http://192.168.x.x AND http://localhost on Android.
+            // The picker will NEVER appear regardless of retries on http://.
+            if (note) {
+                note.style.color = '#d32f2f';
+                note.innerHTML =
+                    '⚠️ Screen monitoring requires <strong>HTTPS</strong>. ' +
+                    'This exam is currently served over HTTP (' + location.protocol + '//' + location.host + '). ' +
+                    'Webcam proctoring remains active. Contact your administrator to enable HTTPS.';
+            }
+            this.textContent = 'Continue Without Screen Monitoring';
+            this.disabled = false;
+            this.addEventListener('click', () => { overlay.remove(); activateDetector(); }, { once: true });
+
+        } else if (failReason === 'api_unavailable') {
+            // HTTPS + recognised browser but getDisplayMedia still absent.
+            // Possible: Android OS < 10, Permissions-Policy header blocking display-capture,
+            // or a browser fork that doesn't implement the API.
+            if (note) {
+                note.style.color = '#d32f2f';
+                note.innerHTML =
+                    '⚠️ Screen monitoring is unavailable on this device. ' +
+                    'Possible causes: Android version below 10, a browser that does not support ' +
+                    'screen sharing, or a server configuration issue. ' +
+                    'Webcam proctoring remains active.';
+            }
+            this.textContent = 'Continue Without Screen Monitoring';
+            this.disabled = false;
+            this.addEventListener('click', () => { overlay.remove(); activateDetector(); }, { once: true });
+
+        } else if (isAndroid && failReason === 'user_cancelled') {
+            // Android user dismissed the picker — offer retry or continue.
+            if (note) {
+                note.style.color = '#e65100';
+                note.innerHTML =
+                    'Screen sharing was not enabled. Tap <strong>"Try Again"</strong> and select ' +
+                    '<strong>"Screen"</strong> → <strong>"Start now"</strong>, or continue without it.';
+            }
+            this.textContent = 'Try Again';
+            this.disabled = false;
+            // Add a secondary "Continue Anyway" link
+            if (!overlay.querySelector('[data-continue-anyway]')) {
+                const continueLink = document.createElement('p');
+                continueLink.setAttribute('data-continue-anyway', '1');
+                continueLink.style.cssText = 'margin:12px 0 0;font-size:0.85rem;';
+                continueLink.innerHTML =
+                    '<a href="#" style="color:#555;" id="continueAnywayLink">Continue without screen monitoring</a>';
+                this.parentNode.appendChild(continueLink);
+                document.getElementById('continueAnywayLink').addEventListener('click', (e) => {
+                    e.preventDefault();
+                    overlay.remove();
+                    activateDetector();
+                });
+            }
+
         } else {
-            // Desktop only: user cancelled — give them another chance
+            // Desktop: user cancelled — keep requiring screen share.
             this.disabled = false;
             this.textContent = 'Try Again';
-            const note = overlay.querySelector('p:last-of-type');
-            note.style.color = '#d32f2f';
-            note.textContent = 'Screen sharing is required. Please click "Try Again" and select "Entire Screen".';
+            if (note) {
+                note.style.color = '#d32f2f';
+                note.textContent = 'Screen sharing is required. Please click "Try Again" and select "Entire Screen".';
+            }
         }
     });
 }

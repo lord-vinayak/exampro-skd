@@ -69,13 +69,37 @@ class ViolationSnapshotManager {
    * @returns {Promise<boolean>} true if permission granted, false if denied
    */
   async requestScreenCapture() {
-    // Guard only against a completely absent mediaDevices object.
-    // We do NOT do a strict typeof check for getDisplayMedia here because
-    // Android Chrome may expose the function without passing that check in all
-    // versions.  Instead we let the try/catch below handle any TypeError
-    // (function missing) or NotAllowedError (user cancelled) uniformly.
     if (!navigator.mediaDevices) {
       console.warn('[ViolationSnapshot] navigator.mediaDevices unavailable. Screen capture disabled.');
+      return false;
+    }
+
+    // ── API availability gate (check this FIRST) ─────────────────────────────
+    // Use optional chaining so a null navigator.mediaDevices doesn't throw.
+    // We check the API directly rather than relying on window.isSecureContext
+    // because isSecureContext is misleading on Android Chrome:
+    //   http://localhost → isSecureContext = TRUE (W3C exception) but Android
+    //   Chrome still does NOT expose getDisplayMedia on http:// URLs.
+    // Checking location.protocol gives the ground truth.
+    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+      const isHttp = location.protocol !== 'https:';
+      const isFirefox = /firefox|fxios/i.test(navigator.userAgent);
+      const isWebView = /android/i.test(navigator.userAgent) && /wv\b/i.test(navigator.userAgent);
+
+      let reason = 'getDisplayMedia is not available.';
+      if (isFirefox)      reason = 'Firefox does not support getDisplayMedia on Android.';
+      else if (isWebView) reason = 'Android WebView does not support getDisplayMedia.';
+      else if (isHttp)    reason = 'getDisplayMedia requires HTTPS (current protocol: ' + location.protocol + '). ' +
+                                   'Note: http://localhost reports isSecureContext=true but Android Chrome ' +
+                                   'still requires https:// for screen capture.';
+
+      const err = new TypeError('[ViolationSnapshot] ' + reason);
+      err.name = isHttp ? 'InsecureContextError' : 'NotSupportedError';
+      console.warn('[ViolationSnapshot]', reason,
+        '| protocol:', location.protocol,
+        '| isSecureContext:', window.isSecureContext,
+        '| ua:', navigator.userAgent);
+      if (this.options.onScreenShareDenied) this.options.onScreenShareDenied(err);
       return false;
     }
 
@@ -86,12 +110,23 @@ class ViolationSnapshotManager {
       // Detect mobile and omit fixed size constraints so the browser picks the
       // native screen resolution.
       const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+
+      // ── CRITICAL: do NOT use displaySurface: 'monitor' (bare string) ──────────
+      // A bare string value in a MediaTrackConstraints dict is treated as an
+      // *exact/required* constraint. On Android Chrome the runtime cannot guarantee
+      // a 'monitor' surface BEFORE the picker dialog opens (the OS permission is
+      // resolved inside the dialog), so Chrome throws OverconstrainedError or
+      // NotSupportedError immediately — the picker never appears.
+      //
+      // Solution: use { ideal: 'monitor' } — a preference/hint that tells Chrome
+      // to show the "Screen" option first, but falls back gracefully to whatever
+      // surfaces are available rather than failing hard.
       this._screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: isMobile ? {
-          displaySurface: 'monitor', // tells Android Chrome to offer "Screen" first
+          displaySurface: { ideal: 'monitor' },
           frameRate:      { ideal: 10 },
         } : {
-          displaySurface: 'monitor',
+          displaySurface: { ideal: 'monitor' },
           width:          { ideal: 1920 },
           height:         { ideal: 1080 },
           frameRate:      { ideal: 15 },
@@ -136,10 +171,21 @@ class ViolationSnapshotManager {
       return true;
 
     } catch (err) {
-      // NotAllowedError = candidate clicked Cancel in the browser dialog
-      // TypeError       = getDisplayMedia not available on this browser/version
-      // Any error here means getDisplayMedia itself failed — stream was never obtained.
-      console.warn('[ViolationSnapshot] Screen share failed:', err.name, err.message);
+      // Known error names and what they mean:
+      //   NotAllowedError        — user cancelled the picker dialog
+      //   NotSupportedError      — browser/OS doesn't support the requested capture
+      //   OverconstrainedError   — a hard constraint (e.g. exact displaySurface) can't be met
+      //   InvalidStateError      — called outside a secure context or wrong document state
+      //   TypeError              — getDisplayMedia not a function (shouldn't reach here after pre-flight)
+      //   AbortError             — OS aborted the request (e.g. another app grabbed the projection token)
+      console.warn(
+        '[ViolationSnapshot] getDisplayMedia failed.',
+        'name:', err.name,
+        '| message:', err.message,
+        '| constraint:', err.constraint || '(none)',
+        '| protocol:', location.protocol,
+        '| ua:', navigator.userAgent
+      );
       this._teardownScreenStream();
       if (this.options.onScreenShareDenied) this.options.onScreenShareDenied(err);
       return false;
@@ -176,21 +222,18 @@ class ViolationSnapshotManager {
     }
 
     // Always grab webcam synchronously RIGHT NOW — reflects the exact violation moment.
+    // This is the INSTANT anchor: even when the "screen" frame resolves slightly
+    // later (mobile window render), this front-camera frame is taken with zero
+    // delay and zero polling — exactly at the moment the violation fired.
     const webcamSnapshot = this._captureWebcamSync();
     this._lastCaptureTime[violationType] = Date.now();
 
-    const screenDelay = opts.screenDelay || 0;
-
-    const doUpload = () => {
-      // Capture screen now (either immediately or after the delay).
-      const screenSnapshot = this._captureScreenSync();
-
+    // Background upload helper — fired once the screen/window frame is ready.
+    const finishUpload = (screenSnapshot) => {
       if (!webcamSnapshot && !screenSnapshot) {
         console.warn('[ViolationSnapshot] Both snapshots null, nothing to upload.');
         return;
       }
-
-      // Upload in the background — don't block the caller.
       this._upload(violationType, description, webcamSnapshot, screenSnapshot)
         .then((result) => {
           if (result && this.options.onSnapshotCaptured) {
@@ -203,10 +246,32 @@ class ViolationSnapshotManager {
         });
     };
 
-    if (screenDelay > 0) {
-      setTimeout(doUpload, screenDelay);
+    if (this.isScreenShareActive()) {
+      // ── Desktop path ──────────────────────────────────────────────────────
+      // A live getDisplayMedia stream exists — grab a frame from it. The optional
+      // screenDelay lets the OS paint the switched-to app before we capture.
+      const screenDelay = opts.screenDelay || 0;
+      const grab = () => finishUpload(this._captureScreenSync());
+      if (screenDelay > 0) setTimeout(grab, screenDelay);
+      else grab();
+
+    } else if (this._canCaptureWindow()) {
+      // ── Mobile path ───────────────────────────────────────────────────────
+      // Mobile browsers cannot capture the OS screen (getDisplayMedia is absent),
+      // so we render the EXAM BROWSER WINDOW (the visible viewport) to an image
+      // with html2canvas. This is async; the webcam frame above already froze the
+      // violation instant, so the moment is preserved even though this resolves a
+      // few hundred ms later. The rendered exam window is what the candidate sees.
+      this._captureWindowAsync()
+        .then((windowSnapshot) => finishUpload(windowSnapshot))
+        .catch((err) => {
+          console.warn('[ViolationSnapshot] Window capture failed, uploading webcam only:', err);
+          finishUpload(null);
+        });
+
     } else {
-      doUpload();
+      // No screen capture available at all → webcam-only upload.
+      finishUpload(null);
     }
   }
 
@@ -289,6 +354,60 @@ class ViolationSnapshotManager {
       return canvas.toDataURL('image/jpeg', 0.55);
     } catch (err) {
       console.error('[ViolationSnapshot] Screen capture error:', err);
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: mobile browser-window capture (html2canvas)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * True when the html2canvas library is loaded and we can render the exam
+   * browser window to an image. Used as the mobile fallback for the "screen"
+   * snapshot, since getDisplayMedia is unavailable on every mobile browser.
+   */
+  _canCaptureWindow() {
+    return typeof window !== 'undefined' && typeof window.html2canvas === 'function';
+  }
+
+  /**
+   * Render the visible exam browser window (the current viewport) to a JPEG.
+   *
+   * This is the mobile equivalent of a "screen" snapshot: a browser cannot see
+   * outside its own window on a phone, so we capture exactly what is rendered in
+   * the exam tab — the questions, options, timer and any in-page state — at the
+   * violation moment.
+   *
+   * @returns {Promise<string|null>} JPEG data URL, or null on failure.
+   */
+  async _captureWindowAsync() {
+    if (!this._canCaptureWindow()) return null;
+
+    try {
+      const vw = window.innerWidth  || document.documentElement.clientWidth  || 360;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 640;
+
+      // Downscale so the longest side is ~1280px — keeps the upload small while
+      // staying legible. scale < 1 renders the DOM at a lower resolution.
+      const scale = Math.min(1, 1280 / Math.max(vw, vh));
+
+      const canvas = await window.html2canvas(document.documentElement, {
+        x:               window.scrollX,
+        y:               window.scrollY,
+        width:           vw,
+        height:          vh,
+        scale:           scale,
+        logging:         false,
+        useCORS:         true,
+        backgroundColor: '#ffffff',
+        // Skip elements we never want in the shot (hidden capture helpers, overlays).
+        ignoreElements:  (el) => el.hasAttribute && el.hasAttribute('data-vs-ignore'),
+      });
+
+      return canvas.toDataURL('image/jpeg', 0.6);
+    } catch (err) {
+      console.error('[ViolationSnapshot] Window capture (html2canvas) error:', err);
       return null;
     }
   }

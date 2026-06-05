@@ -5,6 +5,12 @@ head_include %}
 {% for ext in page_extensions %} {{ ext.render_header() }} {% endfor %}
 <link rel="stylesheet" href="/assets/exampro/css/exam-index.css?v={{ asset_version }}" />
 {% endblock %} {% block page_content %}
+<noscript>
+  <div class="alert alert-danger m-3">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+    JavaScript must be enabled to take this exam. Please enable JavaScript in your browser settings and reload the page.
+  </div>
+</noscript>
 
 <div class="container mt-4 mb-4">
   {% if alert %}
@@ -177,6 +183,20 @@ head_include %}
 
       <div class="row">
         <div class="col-md-12">
+        {% if exam.submission_status == "Registered" %}
+        <!-- System Compatibility Check — shown before exam starts -->
+        <div class="card common-card-style mb-3" id="compatibility-check-card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0 fw-semibold text-dark">
+              <i class="bi bi-shield-check me-2"></i>System Compatibility Check
+            </h5>
+            <span id="compat-overall-badge" class="badge bg-secondary">Checking…</span>
+          </div>
+          <div class="card-body" id="compat-check-body">
+            <p class="text-muted mb-0" style="font-size:0.9rem;">Running checks, please wait…</p>
+          </div>
+        </div>
+        {% endif %}
         {% if exam.submission_status == "Started" %}
         <div class="card common-card-style" x-data="{ isCollapsed: true }">
             <div
@@ -326,6 +346,7 @@ head_include %}
 <script type="text/javascript" src="/assets/exampro/js/examutils.js?v={{ asset_version }}"></script>
 <script type="text/javascript" src="/assets/exampro/js/inactivityDetector.js?v={{ asset_version }}"></script>
 <script type="text/javascript" src="/assets/exampro/js/examform.js?v={{ asset_version }}"></script>
+<script type="text/javascript" src="/assets/exampro/js/compatibility-check.js?v={{ asset_version }}"></script>
 <script type="text/javascript" src="/assets/exampro/js/exam-index.js?v={{ asset_version }}"></script>
 <script type="text/javascript" src="/assets/exampro/js/chatbox.js?v={{ asset_version }}"></script>
 <script type="text/javascript">

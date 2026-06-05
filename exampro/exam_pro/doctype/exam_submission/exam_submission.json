@@ -355,6 +355,12 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "Mobile Snapshot Violation Ref"
+  },
+  {
+   "fieldname": "compatibility_check_log",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "Compatibility Check Log"
   }
  ],
  "index_web_pages_for_search": 1,

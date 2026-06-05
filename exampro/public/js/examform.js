@@ -977,7 +977,8 @@ frappe.ready(() => {
 
     if (exam["submission_status"] === "Registered") {
         $("#quiz-btn").text("Start exam");
-        $("#quiz-btn").show();
+        // Disabled until compatibility-check.js confirms all blocking checks pass
+        $("#quiz-btn").prop("disabled", true).show();
         $("#quiz-message").hide();
         $("#quiz-btn").click((e) => {
             e.preventDefault();

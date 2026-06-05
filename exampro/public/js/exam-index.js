@@ -2,12 +2,8 @@
 let mediaPermissionsGranted = false;
 let mediaStream = null;
 
-// Request camera and audio access on window load (only if video proctoring is enabled)
-window.addEventListener("load", function () {
-  if (exam.enable_video_proctoring) {
-    requestMediaAccess();
-  }
-});
+// Media access is now requested by compatibility-check.js on window load.
+// requestMediaAccess() is kept below for manual retry via showMediaPermissionError().
 
 async function requestMediaAccess() {
   try {

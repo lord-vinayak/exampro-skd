@@ -427,6 +427,16 @@ def get_current_qs(exam_submission):
 	
 
 @frappe.whitelist()
+def save_compatibility_log(exam_submission, log):
+	doc = frappe.get_doc("Exam Submission", exam_submission)
+	if frappe.session.user != doc.candidate:
+		raise PermissionError("Incorrect exam for the user.")
+	doc.compatibility_check_log = frappe.parse_json(log) if isinstance(log, str) else log
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+
+
+@frappe.whitelist()
 def start_exam(exam_submission=None):
 	"""
 	start exam, Get questions and store in order

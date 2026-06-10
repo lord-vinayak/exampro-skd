@@ -335,6 +335,17 @@
                         <span class="badge badge-danger">{{ v.type }}</span>
                         <div style="font-size: 9px; color: #444; font-style: italic; margin-top: 4px;">{{ v.message }}</div>
                     </td>
+                    {% if v.raw_type == "noise_detected" %}
+                    <td colspan="3" style="text-align: center; vertical-align: middle; padding: 10px;">
+                        {% if v.audio_url %}
+                            <div style="font-size: 9px;">
+                                <a href="{{ v.audio_url }}" style="color: #1a73e8;">Play / Download Recording</a>
+                            </div>
+                        {% else %}
+                            <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#bbb; font-size: 8px; font-style: italic;">Audio clip unavailable</div>
+                        {% endif %}
+                    </td>
+                    {% else %}
                     <td style="text-align: center;">
                         {% if v.webcam %}
                             <img src="{{ v.webcam }}" class="evidence-image" style="max-height: 100px; max-width: 100%; width: auto;" />
@@ -356,6 +367,7 @@
                             <div style="height: 60px; background: #f8f9fa; border: 1px dashed #ccc; display:flex; align-items:center; justify-content:center; color:#bbb; font-size: 8px;">No Mobile</div>
                         {% endif %}
                     </td>
+                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>

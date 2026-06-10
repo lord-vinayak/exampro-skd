@@ -94,7 +94,8 @@ def get_report_context(doc):
         "Exam Messages",
         filters={"exam_submission": doc.name, "type_of_message": "Warning"},
         fields=["name", "warning_type", "message", "timestamp", "from",
-                "webcam_snapshot_key", "screen_snapshot_key", "mobile_snapshot_key"],
+                "webcam_snapshot_key", "screen_snapshot_key", "mobile_snapshot_key",
+                "audio_clip_key"],
         order_by="timestamp asc"
     )
 
@@ -169,6 +170,22 @@ def get_report_context(doc):
             webcam_img = None
             screen_img = None
 
+        # For noise violations: clear snapshots and generate a presigned audio URL instead
+        audio_url = None
+        if msg.warning_type == "noise_detected":
+            webcam_img = None
+            screen_img = None
+            mobile_img = None
+            if msg.get("audio_clip_key"):
+                try:
+                    audio_url = s3_client.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": settings.s3_bucket, "Key": msg.audio_clip_key},
+                        ExpiresIn=3600,
+                    )
+                except Exception:
+                    frappe.log_error(frappe.get_traceback(), f"Audio presigned URL failed: {msg.audio_clip_key}")
+
         formatted_violations.append({
             "type": label,
             "raw_type": msg.warning_type,
@@ -179,6 +196,7 @@ def get_report_context(doc):
             "webcam": webcam_img,
             "screen": screen_img,
             "mobile": mobile_img,
+            "audio_url": audio_url,
             "snapshot_ts_diff": snapshot_diff,
             "is_mobile_violation": msg.warning_type in MOBILE_WARNING_TYPES,
         })
